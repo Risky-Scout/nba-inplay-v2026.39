@@ -26,6 +26,7 @@ from datetime import datetime
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Tuple, Optional
 from nba_stint_engine import NBAStintEngine
+from rotation_hazard import pathwise_blowout_probability
 
 try:
     from dotenv import load_dotenv
@@ -724,7 +725,7 @@ class InPlayMarkovEngine:
 
     @staticmethod
     def _schedule(roster, alloc_min: np.ndarray, on_court: List[int], T_sec: float, use_current: bool,
-                  seg_lens: Optional[List[float]] = None) -> List[Tuple[int, ...]]:
+                  seg_lens: Optional[List[float]] = None, blowout: bool = False) -> List[Tuple[int, ...]]:
         """Lineup per segment with persistence: the five on the floor stay unless a player has used his allocation
         (less than half a segment left) or a bench player has LINEUP_HYST_SEC more remaining allocation than the
         weakest on-court player. Short segments without persistence would substitute every 15 s."""
@@ -732,8 +733,8 @@ class InPlayMarkovEngine:
         rem = alloc_min * 60.0
         pmp = [p.p_mp for p in roster]
         ok = lambda k: alloc_min[k] > 0
-        rank = lambda k: (-(rem[k] if ok(k) else -1e9), -pmp[k])
-        cur = [k for k, p in enumerate(roster) if p.player_id in set(on_court) and ok(k)][:5] if use_current else []
+        rank = lambda k: ((0 if (blowout and pmp[k] <= 24.0) else (1 if blowout else 0)), -(rem[k] if ok(k) else -1e9), -pmp[k])
+        cur = [] if blowout else ([k for k, p in enumerate(roster) if p.player_id in set(on_court) and ok(k)][:5] if use_current else [])
         out = []
         for s, L in enumerate(seg_lens):
             lineup = [k for k in cur if ok(k) and rem[k] >= 0.5 * L]
@@ -881,7 +882,7 @@ class InPlayMarkovEngine:
         gs = self._game_started()
         h_role = np.array([1.0 if is_starter_now(p, st.live_box.get(p.player_id), gs) else -1.0 for p in self.home_roster])
         a_role = np.array([1.0 if is_starter_now(p, st.live_box.get(p.player_id), gs) else -1.0 for p in self.away_roster])
-        packs, scen_packs, min_proj = {}, [], {}
+        packs, scen_packs, scen_blowout_packs, min_proj = {}, [], [], {}
         seg_lens = segment_lengths(T0)
         seg_start = [0.0]
         for L in seg_lens[:-1]:
@@ -909,15 +910,23 @@ class InPlayMarkovEngine:
                             aa = newa
             h_sched = self._schedule(self.home_roster, ha, st.on_court_home, T0, use_current, seg_lens)
             a_sched = self._schedule(self.away_roster, aa, st.on_court_away, T0, use_current, seg_lens)
-            seg_packs = []
-            for s, (hs, as_) in enumerate(zip(h_sched, a_sched)):
+            h_blow = self._schedule(self.home_roster, ha, st.on_court_home, T0, False, seg_lens, blowout=True)
+            a_blow = self._schedule(self.away_roster, aa, st.on_court_away, T0, False, seg_lens, blowout=True)
+            seg_packs, blow_packs = [], []
+            for s, (hs, as_, hb, ab) in enumerate(zip(h_sched, a_sched, h_blow, a_blow)):
                 clutch = (T0 - seg_start[s]) <= 300.0 and abs(diff) <= 10
                 key = (hs, as_, clutch)
                 if key not in packs:
                     packs[key] = self._compile_pair([self.home_roster[k] for k in hs], [self.away_roster[k] for k in as_],
                                                     clutch, id_to_idx, sec_per_poss)
                 seg_packs.append(packs[key])
+                bkey = (hb, ab, False)
+                if bkey not in packs:
+                    packs[bkey] = self._compile_pair([self.home_roster[k] for k in hb], [self.away_roster[k] for k in ab],
+                                                     False, id_to_idx, sec_per_poss)
+                blow_packs.append(packs[bkey])
             scen_packs.append(seg_packs)
+            scen_blowout_packs.append(blow_packs)
             for roster, sched in ((self.home_roster, h_sched), (self.away_roster, a_sched)):
                 for s, pick in enumerate(sched):
                     L = seg_lens[s] / 60.0 / n_scen
@@ -943,6 +952,7 @@ class InPlayMarkovEngine:
 
         for sim in range(n_sims):
             seg_packs = scen_packs[sim % n_scen]
+            blow_packs = scen_blowout_packs[sim % n_scen]
             pf = float(scen_dt[sim % n_scen])
             pts, reb, ast, tpm = [0] * n_p, [0] * n_p, [0] * n_p, [0] * n_p
             clock = T0
@@ -970,7 +980,9 @@ class InPlayMarkovEngine:
                     s_new = last
                 if s_new != si:
                     si = s_new
-                    pk = seg_packs[si]
+                    sim_margin = (h0 + sum(pts[i] for i in h_idx)) - (a0 + sum(pts[i] for i in a_idx))
+                    p_blow = pathwise_blowout_probability(sim_margin, clock)
+                    pk = blow_packs[si] if R() < p_blow else seg_packs[si]
                     sd = pk[poss]
                 nx = BIS(sd.P[h], R())
                 if nx < 5:
