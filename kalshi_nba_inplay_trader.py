@@ -2001,7 +2001,8 @@ def main():
         logger.error("Research-only overrides cannot trade live: forcing PAPER mode.")
         args.live = False
     if research:
-        args.pilot_live = False        args.max_contracts = None
+        args.pilot_live = False
+        args.max_contracts = None
         print("!" * 92 + f"\n RESEARCH OVERRIDE: {', '.join(research)}. NOT VALIDATED FOR LIVE CAPITAL. PAPER MODE ONLY.\n" + "!" * 92)
     if args.pilot_live:
         print("#" * 92 + "\n PILOT LIVE: REAL MONEY, NOT PRODUCTION. Unvalidated configuration collecting execution evidence: 1 contract per\n"
