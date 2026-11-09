@@ -1,0 +1,23 @@
+name: v2026.39 CI
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+      - name: Compile all source
+        run: python -m py_compile *.py tests/*.py
+      - name: v2026.39 regression
+        run: python test_v2039.py
+      - name: v2026.37 regression
+        run: python tests/test_v2037.py
+      - name: v2026.38 regression
+        run: python tests/test_v2038.py
