@@ -76,6 +76,14 @@ eng=MG.InPlayMarkovEngine(MG.LiveInPlayState("g","g","Q1 12:00",1,2880,1,2,"H","
 cp=eng._calibrated_profile(prof)
 ck("generative calibration changes attempt intensity",cp.p_fga_rim_100>prof.p_fga_rim_100 and cp.p_fg3a_100<prof.p_fg3a_100)
 ck("generative calibration does not change shooting efficiency",cp.p_fgpct_rim==prof.p_fgpct_rim and cp.p_fg3pct==prof.p_fg3pct)
+_role_state=MG.LiveInPlayState("g","g","Q2 6:00",2,1800,1,2,"H","A",50,48,"HOME",[1],[],{
+    1:{"_team_actions":40.0,"FTA":8,"TOV":5,"ORB":2}
+},pbp_context=MG.LivePBPContext(live_fta={1:8},live_tov={1:5},live_orb={1:2},
+    live_orb_opportunities={1:10},live_drb_opportunities={1:10}))
+_role_eng=MG.InPlayMarkovEngine(_role_state,[prof],[MG.DTPlayerSkillProfile(2,"Q",2,3,78,210,100,32,.25,8,6,7,6,5,3,2,6,1,1,.65,.42,.36,.8,1,0,1)],0,0)
+_role=_role_eng._calibrated_profile(prof)
+ck("live role posterior updates FTA/TOV opportunity rates",_role.p_fta_100!=prof.p_fta_100 and _role.p_tov_100!=prof.p_tov_100)
+ck("live role posterior never applies hot-hand FG adjustment",_role.p_fgpct_rim==prof.p_fgpct_rim and _role.p_fg3pct==prof.p_fg3pct)
 ck("legacy post calibration disabled by default",eng.legacy_post_calibration is False)
 
 X=np.zeros((2,len(RA.FEATURES))); p=np.array([.3,.6])
