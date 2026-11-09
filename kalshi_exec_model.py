@@ -1,4 +1,4 @@
-"""Execution model shared by the trader and fit_execution.py (v2026.37): ONE feature definition and ONE scoring path, so
+"""Execution model shared by the trader and fit_execution.py (v2026.39 / qp7): ONE feature definition and ONE scoring path, so
 a model is always scored on exactly the features, and the training-only scaler, it was fitted with.
 
 Model objects (champion_exec_model.json / challenger_exec_model.json):
@@ -22,7 +22,8 @@ STOP_TYPES = ("timeout", "substitution", "freethrow", "period", "instantreplay")
 EXEC_FEATURES = ["const", "side_no", "aggr", "spread", "price", "gap_c", "ttl_s",
                  "stop_timeout", "stop_substitution", "stop_freethrow", "stop_period", "stop_instantreplay",
                  "ph_q1", "ph_q2", "ph_ht", "ph_q4", "stat_reb", "stat_ast",
-                 "log_qbid", "log_qask", "imbalance", "log_queue_ahead", "book_age_s", "t_since_action_s",
+                 "log_qbid", "log_qask", "imbalance", "log_queue_ahead", "order_qty", "qty_over_best_depth",
+                 "qty_over_queue_ahead", "log_order_qty", "book_age_s", "t_since_action_s",
                  "mid_vel_250ms", "mid_vel_1s", "spread_vel", "imb_vel", "bid_depletion", "ask_replenish", "has_ws"]
 BINARY = {"const", "side_no", "has_ws"} | {f for f in EXEC_FEATURES if f.startswith(("stop_", "ph_", "stat_"))}
 GAP_COL = EXEC_FEATURES.index("gap_c")
@@ -40,7 +41,7 @@ def stop_type_of(last_action_type: str) -> str:
 def exec_features(side: str, stat: str, period: int = 0, bid: int = 0, ask: int = 0, price: int = 0, gap_c: float = 0.0,
                   ttl_s: float = 8.0, stop: str = "other", phase: Optional[str] = None, qty_bid: float = 0.0,
                   qty_ask: float = 0.0, queue_ahead: float = 0.0, book_age_s: float = 0.0, t_since_action_s: float = 0.0,
-                  micro: Optional[dict] = None) -> np.ndarray:
+                  micro: Optional[dict] = None, order_qty: float = 1.0, best_depth: float = 0.0) -> np.ndarray:
     """Raw (unscaled) features of one candidate quote. bid/ask are the SIDE's book (for NO: 100 - yes_ask / 100 - yes_bid)
     and qty_bid/qty_ask the depth at that side's best bid / best ask. aggr = (price - bid) / max(ask - bid, 1) replaces
     the collinear (level, distance-to-mid) pair. gap_c = 100 x (p_used - p_mkt) on that side."""
@@ -56,6 +57,10 @@ def exec_features(side: str, stat: str, period: int = 0, bid: int = 0, ask: int 
             "stat_reb": float(stat == "REB"), "stat_ast": float(stat == "AST"),
             "log_qbid": math.log1p(qb), "log_qask": math.log1p(qa), "imbalance": (qb - qa) / max(qb + qa, 1e-9),
             "log_queue_ahead": math.log1p(max(0.0, float(queue_ahead or 0.0))),
+            "order_qty": max(1.0, float(order_qty or 1.0)),
+            "qty_over_best_depth": max(1.0, float(order_qty or 1.0)) / max(float(best_depth or qb or 0.0), 1.0),
+            "qty_over_queue_ahead": max(1.0, float(order_qty or 1.0)) / max(float(queue_ahead or 0.0), 1.0),
+            "log_order_qty": math.log1p(max(1.0, float(order_qty or 1.0))),
             "book_age_s": float(book_age_s or 0.0), "t_since_action_s": min(120.0, float(t_since_action_s or 0.0)),
             **{k: float(micro.get(k) or 0.0) for k in MICRO_KEYS}, "has_ws": float(bool(micro.get("has_ws")))}
     return np.array([vals[f] for f in EXEC_FEATURES], dtype=float)
@@ -76,7 +81,7 @@ def standardize(scaler: dict, X: np.ndarray) -> np.ndarray:
 
 def model_id(model: dict) -> str:
     """Content hash of what the model predicts with (features, scaler, coefficients, training spec)."""
-    keep = {k: model.get(k) for k in ("features", "scaler", "fill", "mark_all", "mark_ef", "drift", "spec", "trained_through")}
+    keep = {k: model.get(k) for k in ("features", "scaler", "fill_any", "fill_fraction", "fill", "mark_all", "mark_ef", "drift", "spec", "trained_through")}
     return hashlib.sha256(json.dumps(keep, sort_keys=True, default=str).encode()).hexdigest()[:12]
 
 
@@ -88,15 +93,17 @@ def quote_value(model: dict, x_raw: np.ndarray, alpha_c: float, fee_c: float, z:
     """P(fill), E[execution residual | fill] and QuoteEV = P(fill) x (alpha + residual - fee), each with a bootstrap
     s.d. when the model carries coefficient draws. qev_lcb = mean - z x sd."""
     xs = standardize(model["scaler"], x_raw)
-    bf = [np.asarray(model["fill"], float)] + [np.asarray(b, float) for b in (model.get("boot_fill") or [])]
+    bf = [np.asarray(model.get("fill_any", model.get("fill")), float)] + [np.asarray(b, float) for b in (model.get("boot_fill") or [])]
     bm = [np.asarray(model["mark_all"], float)] + [np.asarray(b, float) for b in (model.get("boot_mark") or [])]
     k = min(len(bf), len(bm))
     pf = np.array([float(_sig(b @ xs)) for b in bf[:k]])
     em = np.array([float(b @ xs) for b in bm[:k]])
+    bfrac = np.asarray(model.get("fill_fraction", model.get("fill_any", model.get("fill"))), float)
+    pfrac = float(_sig(bfrac @ xs))
     qev = pf * (alpha_c + em - fee_c)
     use = slice(1, None) if k > 1 else slice(0, 1)            # draws for the spread, the point estimate for the mean
     sd = float(np.std(qev[use], ddof=1)) if k > 2 else 0.0
-    return dict(pf=float(pf[0]), em=float(em[0]), qev=float(qev[0]), qev_sd=sd, qev_lcb=float(qev[0]) - z * sd,
+    return dict(pf=float(pf[0]), fill_fraction=pfrac, em=float(em[0]), qev=float(qev[0]), qev_sd=sd, qev_lcb=float(qev[0]) - z * sd,
                 pf_sd=float(np.std(pf[use], ddof=1)) if k > 2 else 0.0, em_sd=float(np.std(em[use], ddof=1)) if k > 2 else 0.0)
 
 
@@ -114,7 +121,7 @@ def load_model(path: str, quote_policy: str) -> Optional[dict]:
     except Exception:
         return None
     if m.get("quote_policy") != quote_policy or not m.get("validated") or m.get("features") != EXEC_FEATURES \
-            or not m.get("scaler") or m.get("fill") is None or m.get("mark_all") is None:
+            or not m.get("scaler") or m.get("fill_any", m.get("fill")) is None or m.get("fill_fraction") is None or m.get("mark_all") is None:
         return None
     m.setdefault("exec_model_id", model_id(m))
     return m
