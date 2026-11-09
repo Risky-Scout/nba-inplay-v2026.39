@@ -219,10 +219,14 @@ check("no REB cell (pure noise around a calibrated market) is confirmed or PRODU
 
 # ── P0-5: behaviour policy and action support ─────────────────────────────────────────────────────────────────────
 print("5) action support in off-policy evaluation")
-r_new = pd.DataFrame([dict(price=51, propensity=0.9, pi_b=json.dumps({"50": 0.05, "51": 0.9, "52": 0.05}))]).itertuples().__next__()
-r_old = pd.DataFrame([dict(price=51, propensity=0.9)]).itertuples().__next__()
+_pa = {FE.action_key(px, 1, 8): pr for px, pr in {50: 0.05, 51: 0.9, 52: 0.05}.items()}
+r_new = pd.DataFrame([dict(price=51, requested_qty=1, ttl=8, propensity=0.9,
+                               pi_b=json.dumps({"50": 0.05, "51": 0.9, "52": 0.05}),
+                               pi_b_action=json.dumps(_pa))]).itertuples().__next__()
+r_old = pd.DataFrame([dict(price=51, requested_qty=1, ttl=8, propensity=0.9)]).itertuples().__next__()
 check("logged pi_b gives every level's behaviour probability", FE.behaviour_probs(r_new) == {50: 0.05, 51: 0.9, 52: 0.05})
-check("a legacy row (no pi_b) has known support only at the action taken", FE.behaviour_probs(r_old) == {51: 0.9})
+check("qp7 exact action distribution is price+qty+TTL", FE.behaviour_action_probs(r_new) == _pa)
+check("legacy price-only row has NO qp7 action support", FE.behaviour_action_probs(r_old) == {})
 
 
 def synth_quotes(n=600, seed=4, dates=("20261101", "20261102", "20261103", "20261104"), log_pi=True):
@@ -243,8 +247,10 @@ def synth_quotes(n=600, seed=4, dates=("20261101", "20261102", "20261103", "2026
         m30 = (52 - px) + drift - 2.0 + r.normal(0, 1)
         out.append(dict(order_id=f"q{i}", ticker=f"KXNBAPTS-26NOV0{1 + i % 4}G{i % 9}XX-{i}", side="yes", price=px, yes_bid=yb,
                         yes_ask=ya, stat="PTS", period=3, phase="Q3", stop="timeout", ttl=ttl, qty_bid=20, qty_ask=20,
-                        p_used=0.55, p_mkt=0.52, fee_c=0.0, propensity=float(pib[str(px)]),
-                        pi_b=json.dumps(pib) if log_pi else None, run_id=dates[i % len(dates)] + "_190000",
+                        p_used=0.55, p_mkt=0.52, fee_c=0.0, propensity=float(pib[str(px)]), requested_qty=1,
+                        pi_b=json.dumps(pib) if log_pi else None,
+                        pi_b_action=(json.dumps({FE.action_key(int(k), 1, ttl): float(v) for k, v in pib.items()}) if log_pi else None),
+                        run_id=dates[i % len(dates)] + "_190000",
                         label=float(filled), m30_all=m30 if filled else np.nan, m30_ef=np.nan, q_m30=np.nan if filled else drift,
                         quote_policy="qp7", arm="base"))
     q = pd.DataFrame(out)
@@ -261,11 +267,12 @@ pv = FE.policy_values(m, qq)
 check("policy values report the supported count and overlap share", all(len(v) == 4 for v in pv.values()) and pv["join"][3] == 1.0)
 qq0 = synth_quotes(log_pi=False)
 pr0 = FE.policy_rows(m, qq0)
-check("legacy logs: a target level the behaviour policy did not take has NO support (not extrapolated into evidence)",
-      pr0["join_sup"].mean() < 0.5 and pr0["join_sup"].sum() == int((qq0["price"] == qq0["yes_bid"]).sum()),
-      f"join support {pr0['join_sup'].mean():.2f}")
+check("legacy price-only logs cannot certify qp7 exact actions",
+      pr0["join_sup"].sum() == 0, f"join support {pr0['join_sup'].mean():.2f}")
 qq_far = qq.copy()
 qq_far["pi_b"] = qq_far.apply(lambda r_: json.dumps({str(int(r_.price)): 1.0}), axis=1)
+qq_far["pi_b_action"] = qq_far.apply(
+    lambda r_: json.dumps({FE.action_key(int(r_.price), int(r_.requested_qty), float(r_.ttl)): 1.0}), axis=1)
 pr_far = FE.policy_rows(m, qq_far)
 v_far = FE.policy_values(m, qq_far)
 check("a level with pi_b < eps contributes nothing: values are computed on supported decisions only",
