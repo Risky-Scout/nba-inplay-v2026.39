@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Nightly qp7 diagnostics: opportunity capacity, P&L attribution, and clustered drawdown risk.
+
+None of these outputs can loosen a trading gate or risk limit.
+"""
+from __future__ import annotations
+import glob, json, os
+from datetime import datetime
+import numpy as np, pandas as pd
+
+BANKROLLS=(100,250,500,1000,2500,5000,10000)
+
+def _read(here,pat):
+    fs=[f for f in sorted(glob.glob(os.path.join(here,pat))) if os.path.getsize(f)>0]
+    return pd.concat([pd.read_csv(f) for f in fs],ignore_index=True) if fs else pd.DataFrame()
+
+def _latest_run_config(here):
+    fs=sorted(glob.glob(os.path.join(here,"run_config_*.json")))
+    if not fs:return {}
+    try:return json.load(open(fs[-1]))
+    except Exception:return {}
+
+def _num(d,c,default=0.0):
+    if c not in d:return pd.Series(default,index=d.index,dtype=float)
+    return pd.to_numeric(d[c],errors="coerce").fillna(default)
+
+def capacity_report(here):
+    e=_read(here,"kalshi_eligible_*.csv")
+    q=_read(here,"kalshi_quotes_*.csv")
+    f=_read(here,"kalshi_fills_*.csv")
+    cfg=_latest_run_config(here)
+    base_br=float(cfg.get("bankroll",250.0) or 250.0)
+    rows=[]
+    def summarize(d,br,stage):
+        if d.empty:return 0.0
+        edge=_num(d,"cond_edge_c",np.nan)
+        if edge.isna().all(): edge=_num(d,"net_edge_c",0.0)
+        edge=edge.fillna(0.0)
+        qty=_num(d,"requested_qty",np.nan)
+        if qty.isna().all(): qty=_num(d,"count",1.0)
+        qty=qty.fillna(1.0).clip(lower=1)
+        # Diagnostic bankroll scale only. Liquidity penalizes fill fraction as size exceeds observed depth/queue.
+        qscaled=np.maximum(1.0,np.floor(qty*float(br)/max(base_br,1.0)))
+        frac=_num(d,"effective_fill_fraction",np.nan)
+        if frac.isna().all(): frac=_num(d,"fill_prob",1.0)
+        frac=frac.fillna(1.0).clip(0,1)
+        depth=_num(d,"qty_bid",np.nan)
+        if depth.isna().all(): depth=_num(d,"best_depth",np.nan)
+        qahead=_num(d,"queue_ahead",np.nan)
+        liq=np.ones(len(d))
+        m=depth.notna() & (depth>0); liq[m]=np.minimum(liq[m],(depth[m]/qscaled[m]).clip(upper=1.0))
+        m=qahead.notna() & (qahead>0); liq[m]=np.minimum(liq[m],(qahead[m]/qscaled[m]).clip(upper=1.0))
+        eq=qscaled*frac*liq
+        return float(np.sum(eq*edge/100.0))
+    for br in BANKROLLS:
+        rows.append(dict(bankroll=br,
+                         expected_alpha_generated_usd=summarize(e,br,"generated"),
+                         expected_alpha_posted_usd=summarize(q,br,"posted"),
+                         expected_alpha_filled_usd=summarize(f,br,"filled")))
+    out=pd.DataFrame(rows)
+    date=datetime.now().strftime("%Y-%m-%d")
+    path=os.path.join(here,f"capacity_{date}.csv"); out.to_csv(path,index=False)
+    return path,out
+
+def settled_fills(here,settlements):
+    f=_read(here,"kalshi_fills_*.csv")
+    if f.empty:return f
+    f=f[_num(f,"contracts",0)>0].copy()
+    f["result"]=f["ticker"].astype(str).map(settlements)
+    f=f[f.result.isin(["yes","no"])].copy()
+    if f.empty:return f
+    win=np.where(f["side"].astype(str)=="yes",(f.result=="yes").astype(float),(f.result=="no").astype(float))
+    fee_pc=100.0*_num(f,"fee_usd",0.0)/np.maximum(_num(f,"contracts",1.0),1e-9)
+    f["realized_net_c"]=win*100.0-_num(f,"price_cents",0.0)-fee_pc
+    f["fee_c"]=fee_pc
+    f["day"]=f.get("timestamp",pd.Series("",index=f.index)).astype(str).str[:10]
+    f["game_tok"]=f["ticker"].astype(str).str.split("-").str[1]
+    return f
+
+def pnl_attribution_report(here,settlements):
+    f=settled_fills(here,settlements)
+    if f.empty:return None,pd.DataFrame()
+    m=_read(here,"kalshi_markouts_*.csv")
+    if not m.empty and "order_id" in m and "m30" in m:
+        mm=m.assign(_oid=m.order_id.astype(str),_m30=pd.to_numeric(m.m30,errors="coerce")).groupby("_oid")["_m30"].mean()
+        f["execution_residual_c"]=f["order_id"].astype(str).map(mm).fillna(0.0)
+    else:f["execution_residual_c"]=0.0
+    pused=_num(f,"p_used",0.0); pmkt=_num(f,"p_mkt",pused)
+    f["predictive_alpha_c"]=100.0*(pused-pmkt)
+    f["price_improvement_c"]=100.0*pmkt-_num(f,"price_cents",0.0)
+    f["realized_settlement_noise_c"]=f["realized_net_c"]-(f["predictive_alpha_c"]+f["execution_residual_c"]+f["price_improvement_c"]-f["fee_c"])
+    f["decomposition_residual_c"]=f["realized_net_c"]-(f["predictive_alpha_c"]+f["execution_residual_c"]+f["price_improvement_c"]-f["fee_c"]+f["realized_settlement_noise_c"])
+    if "size_bucket" not in f:
+        q=_num(f,"requested_qty",np.nan).fillna(_num(f,"contracts",1.0))
+        f["size_bucket"]=np.select([q==1,q<=3,q<=6],["QTY1","QTY2_3","QTY4_6"],"QTY7PLUS")
+    for c in ("phase","cell"):
+        if c not in f:f[c]="unknown"
+    grp=["day","stat","phase","cell","size_bucket","side"]
+    agg=f.groupby(grp,dropna=False).apply(lambda x:pd.Series({
+        "contracts":float(_num(x,"contracts",1).sum()),
+        "realized_net_c":float(np.average(x.realized_net_c,weights=np.maximum(_num(x,"contracts",1),1e-9))),
+        "predictive_alpha_c":float(np.average(x.predictive_alpha_c,weights=np.maximum(_num(x,"contracts",1),1e-9))),
+        "execution_residual_c":float(np.average(x.execution_residual_c,weights=np.maximum(_num(x,"contracts",1),1e-9))),
+        "price_improvement_c":float(np.average(x.price_improvement_c,weights=np.maximum(_num(x,"contracts",1),1e-9))),
+        "fee_c":float(np.average(x.fee_c,weights=np.maximum(_num(x,"contracts",1),1e-9))),
+        "settlement_noise_c":float(np.average(x.realized_settlement_noise_c,weights=np.maximum(_num(x,"contracts",1),1e-9))),
+        "decomposition_residual_c":float(np.average(x.decomposition_residual_c,weights=np.maximum(_num(x,"contracts",1),1e-9))),
+    })).reset_index()
+    date=datetime.now().strftime("%Y-%m-%d")
+    path=os.path.join(here,f"pnl_attribution_{date}.csv"); agg.to_csv(path,index=False)
+    if (f.decomposition_residual_c.abs()>0.5).mean()>0.05:
+        print("WARNING: P&L attribution decomposition residual exceeds 0.5c/contract materially")
+    return path,agg
+
+def risk_report(here,settlements,bankroll):
+    f=settled_fills(here,settlements)
+    if f.empty:return None,{}
+    f["pnl_usd"]=f["realized_net_c"]*_num(f,"contracts",1.0)/100.0
+    blocks=f.groupby(["day","game_tok"],dropna=False)["pnl_usd"].sum().reset_index()
+    days={d:g.pnl_usd.to_numpy(float) for d,g in blocks.groupby("day")}
+    day_keys=list(days)
+    if not day_keys:return None,{}
+    rng=np.random.default_rng(39); n_days=max(30,len(day_keys)); n_boot=5000
+    finals=[]; mdds=[]; underwater=[]
+    for _ in range(n_boot):
+        path=[]; cum=0.0; high=0.0; cur_under=0; spans=[]
+        for __ in range(n_days):
+            dk=day_keys[int(rng.integers(0,len(day_keys)))]
+            games=days[dk]
+            # GAME block inside sampled DAY: all trades inside a game remain together.
+            gp=games[rng.integers(0,len(games),len(games))].sum() if len(games) else 0.0
+            cum+=float(gp); high=max(high,cum); path.append(cum)
+            if cum<high:cur_under+=1
+            elif cur_under:spans.append(cur_under); cur_under=0
+        if cur_under:spans.append(cur_under)
+        arr=np.asarray(path); peak=np.maximum.accumulate(np.r_[0.0,arr]) [1:]
+        mdds.append(float(np.max(peak-arr)) if len(arr) else 0.0)
+        finals.append(float(arr[min(29,len(arr)-1)]))
+        underwater.append(float(np.median(spans)) if spans else 0.0)
+    daily=blocks.groupby("day").pnl_usd.sum()
+    mdds=np.asarray(mdds)
+    out={"expected_daily_pnl":float(daily.mean()),"daily_pnl_sd":float(daily.std(ddof=1) if len(daily)>1 else 0.0),
+         "probability_10pct_drawdown":float(np.mean(mdds>=.10*bankroll)),
+         "probability_20pct_drawdown":float(np.mean(mdds>=.20*bankroll)),
+         "expected_max_drawdown":float(mdds.mean()),"median_time_underwater_days":float(np.median(underwater)),
+         "p05_30day_pnl":float(np.percentile(finals,5)),"bootstrap":"DAY outer / GAME inner; trades within game preserved"}
+    date=datetime.now().strftime("%Y-%m-%d"); path=os.path.join(here,f"risk_report_{date}.json")
+    json.dump(out,open(path,"w"),indent=2); return path,out
+
+def write_all(here,settlements):
+    cfg=_latest_run_config(here); br=float(cfg.get("bankroll",250.0) or 250.0)
+    cp,_=capacity_report(here); pp,_=pnl_attribution_report(here,settlements); rp,_=risk_report(here,settlements,br)
+    return {"capacity":cp,"pnl_attribution":pp,"risk_report":rp}
