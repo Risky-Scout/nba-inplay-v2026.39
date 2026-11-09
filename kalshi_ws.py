@@ -48,6 +48,7 @@ class KalshiWSBook:
         self._thread = None
         self.on_update: Optional[Callable[[str], None]] = None
         self.hist: Dict[str, deque] = {}
+        self.queue_tracks: Dict[str, dict] = {}   # order_id -> conservative queue-ahead estimate; never claimed exact
 
     # public -------------------------------------------------------------------------------------------------------
     def start(self):
@@ -87,6 +88,8 @@ class KalshiWSBook:
                 self.updated.pop(t, None)
                 self.sid_of.pop(t, None)
                 self.hist.pop(t, None)
+                for oid in [o for o, q in self.queue_tracks.items() if q.get("ticker") == t]:
+                    self.queue_tracks.pop(oid, None)
                 self.stale.discard(t)
         for sid in dead:
             self._unsubscribe(sid)
@@ -100,6 +103,67 @@ class KalshiWSBook:
                 return None
             lvl = b["yes"] if side == "yes" else b["no"]
             return float(lvl.get(int(price_c), 0.0))
+
+    def start_queue_estimate(self, order_id: str, ticker: str, side: str, price_c: int,
+                             initial_depth: Optional[float] = None) -> dict:
+        """Begin a conservative queue-ahead estimate for one resting order."""
+        with self.lock:
+            b = self.books.get(ticker)
+            lvl = None if b is None else (b["yes"] if side == "yes" else b["no"])
+            depth = float((lvl or {}).get(int(price_c), 0.0))
+            q0 = max(0.0, float(depth if initial_depth is None else initial_depth))
+            now = time.time()
+            self.queue_tracks[str(order_id)] = dict(
+                ticker=ticker, side=side, price=int(price_c), queue_ahead_initial=q0,
+                queue_ahead_est=q0, last_depth=depth, submitted_ts=now, last_ts=now,
+                depleted=0.0, seconds_at_price=0.0, price_level_resets=0,
+                level_present=depth > 0.0)
+            return dict(self.queue_tracks[str(order_id)])
+
+    def queue_estimate(self, order_id: str) -> Optional[dict]:
+        with self.lock:
+            q = self.queue_tracks.get(str(order_id))
+            if q is None:
+                return None
+            out = dict(q)
+            elapsed = max(0.0, time.time() - float(out.get("submitted_ts", time.time())))
+            out["seconds_at_price"] = elapsed
+            out["queue_depletion_rate"] = float(out.get("depleted", 0.0)) / max(elapsed, 1e-6)
+            return out
+
+    def stop_queue_estimate(self, order_id: str) -> Optional[dict]:
+        with self.lock:
+            q = self.queue_tracks.pop(str(order_id), None)
+            if q is None:
+                return None
+            elapsed = max(0.0, time.time() - float(q.get("submitted_ts", time.time())))
+            q["seconds_at_price"] = elapsed
+            q["queue_depletion_rate"] = float(q.get("depleted", 0.0)) / max(elapsed, 1e-6)
+            return dict(q)
+
+    def _update_queue_tracks_locked(self, ticker: str):
+        """Caller holds self.lock. Decreases deplete estimated queue; later additions are behind us."""
+        b = self.books.get(ticker)
+        if b is None:
+            return
+        now = time.time()
+        for q in [v for v in self.queue_tracks.values() if v.get("ticker") == ticker]:
+            lvl = b["yes"] if q["side"] == "yes" else b["no"]
+            depth = max(0.0, float(lvl.get(int(q["price"]), 0.0)))
+            prev = max(0.0, float(q.get("last_depth", 0.0)))
+            was = bool(q.get("level_present", prev > 0))
+            if was and depth < prev:
+                dec = prev - depth
+                q["queue_ahead_est"] = max(0.0, float(q["queue_ahead_est"]) - dec)
+                q["depleted"] = float(q.get("depleted", 0.0)) + dec
+            elif (not was) and depth > 0.0:
+                q["price_level_resets"] = int(q.get("price_level_resets", 0)) + 1
+                q["queue_ahead_est"] = depth
+            # depth increases while continuously present are conservatively assumed behind us.
+            q["last_depth"] = depth
+            q["level_present"] = depth > 0.0
+            q["last_ts"] = now
+            q["seconds_at_price"] = max(0.0, now - float(q.get("submitted_ts", now)))
 
     def micro(self, ticker: str) -> dict:
         """Velocity / depletion features over the last 250 ms and 1 s of top-of-book history (cents and contracts per
@@ -261,6 +325,7 @@ class KalshiWSBook:
                     self.stale.discard(tk)
                     self.updated[tk] = time.time()
                     self._record(tk)
+                    self._update_queue_tracks_locked(tk)
                     applied = True
                 elif tk in self.books and tk not in self.stale:
                     side = m.get("side")
@@ -272,6 +337,7 @@ class KalshiWSBook:
                             lvl.pop(px, None)
                         self.updated[tk] = time.time()
                         self._record(tk)
+                        self._update_queue_tracks_locked(tk)
                         applied = True
         if resub:
             logger.warning(f"[WS] sequence gap on sid {sid}: {len(resub)} book(s) marked stale; unsubscribing and re-snapshotting")
