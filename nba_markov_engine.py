@@ -23,7 +23,7 @@ import requests
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Tuple, Optional
 from nba_stint_engine import NBAStintEngine
 
@@ -568,7 +568,7 @@ def segment_lengths(T_sec: float) -> List[float]:
     return out or [max(1e-6, float(T_sec))]
 CALIB_STATS = (("PTS", "p_pts"), ("REB", "p_reb"), ("AST", "p_ast"), ("3PM", "p_fg3m"))
 CALIB_TRUST = (0.67, 1.50)   # raw D&T/sim ratio outside this band => stat flagged untradeable
-ENGINE_VERSION = "2026.28"    # calibrations are only valid for the engine version they were fitted on
+ENGINE_VERSION = "2026.29"    # calibrations are only valid for the engine version they were fitted on
 # v2026.25: the extra matchup layer (DEPM, rim protection, steal pressure on top of D&T's GAME-OPTIMIZED skills, which
 # already account for opponents) is a coefficient, not a switch. Production default 0 = D&T only, until the logged A/B
 # (p_shadow = strength 1) earns it weight out of sample. Older code used MATCHUP_LAYER (True == strength 1).
@@ -655,7 +655,8 @@ class InPlayMarkovEngine:
         away_roster: List[DTPlayerSkillProfile],
         home_depm_base: float,
         away_depm_base: float,
-        calib: Optional[Dict[int, Dict[str, float]]] = None
+        calib: Optional[Dict[int, Dict[str, float]]] = None,
+        legacy_post_calibration: bool = False
     ):
         self.state = live_state
         self.home_roster = self._eligible(home_roster)
@@ -663,6 +664,25 @@ class InPlayMarkovEngine:
         self.home_depm_base = home_depm_base
         self.away_depm_base = away_depm_base
         self.calib = calib or {}
+        self.legacy_post_calibration = bool(legacy_post_calibration)
+
+    def _calibrated_profile(self, p: DTPlayerSkillProfile) -> DTPlayerSkillProfile:
+        """Apply D&T calibration to generative event intensities, never to shooting percentages."""
+        c = self.calib.get(p.player_id, {}) if self.calib else {}
+        m_pts = float(np.clip(c.get("PTS", 1.0), *CALIB_TRUST))
+        m_3 = float(np.clip(c.get("3PM", m_pts), *CALIB_TRUST))
+        m_reb = float(np.clip(c.get("REB", 1.0), *CALIB_TRUST))
+        m_ast = float(np.clip(c.get("AST", 1.0), *CALIB_TRUST))
+        return replace(
+            p,
+            p_fga_rim_100=max(0.0, p.p_fga_rim_100 * m_pts),
+            p_fga_mid_100=max(0.0, p.p_fga_mid_100 * m_pts),
+            p_fg3a_100=max(0.0, p.p_fg3a_100 * m_3),
+            p_fta_100=max(0.0, p.p_fta_100 * m_pts),
+            p_orb_100=max(0.0, p.p_orb_100 * m_reb),
+            p_drb_100=max(0.0, p.p_drb_100 * m_reb),
+            p_ast_100=max(0.0, p.p_ast_100 * m_ast),
+        )
 
     def _eligible(self, roster: List[DTPlayerSkillProfile]) -> List[DTPlayerSkillProfile]:
         box = self.state.live_box
@@ -985,13 +1005,15 @@ class InPlayMarkovEngine:
                 h = min(4, BIS(sd.init, R()))
             out["PTS"][sim], out["REB"][sim], out["AST"][sim], out["3PM"][sim] = pts, reb, ast, tpm
 
-        # ── D&T calibration of the simulated (future) increments ──
+        # ── engine 2026.29: calibration is generative in _calibrated_profile / _compile_pair. ──
+        # Legacy post-simulation thinning/thickening exists only for explicit diagnostic comparison.
         rng = np.random.default_rng(seed)
         for k in out:
-            M = np.array([self.calib.get(pid, {}).get(k, 1.0) for pid in tracked_ids])
-            if self.calib and np.any(np.abs(M - 1.0) > 1e-9):
-                inc = out[k]
-                out[k] = rng.binomial(inc, np.minimum(M, 1.0)) + rng.binomial(inc, np.clip(M - 1.0, 0.0, 1.0))
+            if self.legacy_post_calibration:
+                M = np.array([self.calib.get(pid, {}).get(k, 1.0) for pid in tracked_ids])
+                if self.calib and np.any(np.abs(M - 1.0) > 1e-9):
+                    inc = out[k]
+                    out[k] = rng.binomial(inc, np.minimum(M, 1.0)) + rng.binomial(inc, np.clip(M - 1.0, 0.0, 1.0))
             if DISPERSION_K != 1.0:
                 inc = out[k].astype(float)
                 mu = inc.mean(axis=0, keepdims=True)
@@ -1008,8 +1030,10 @@ class InPlayMarkovEngine:
     def _compile_pair(self, h_u, a_u, clutch: bool, id_to_idx: Dict[int, int], sec_per_poss: float):
         st = self.state
         box = getattr(self, "_aug_box", None) or st.live_box
-        c_h = RoleCalibratedMarkovCompiler(h_u, a_u, self.away_depm_base, box, st.pbp_context, st.period, clutch)
-        c_a = RoleCalibratedMarkovCompiler(a_u, h_u, self.home_depm_base, box, st.pbp_context, st.period, clutch)
+        h_eff = [self._calibrated_profile(p) for p in h_u]
+        a_eff = [self._calibrated_profile(p) for p in a_u]
+        c_h = RoleCalibratedMarkovCompiler(h_eff, a_eff, self.away_depm_base, box, st.pbp_context, st.period, clutch)
+        c_a = RoleCalibratedMarkovCompiler(a_eff, h_eff, self.home_depm_base, box, st.pbp_context, st.period, clutch)
         sides = []
         for off, dfn in ((c_h, c_a), (c_a, c_h)):
             s = _Side()
