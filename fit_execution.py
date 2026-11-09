@@ -213,10 +213,21 @@ def fit_all(qtr):
     b_fill = fit_logit(Xs[known], lab[known], w[known]) if known.sum() >= 2 else np.zeros(Xs.shape[1])
     kf = np.isfinite(frac)
     b_frac = fit_logit(Xs[kf], np.clip(frac[kf], 1e-5, 1 - 1e-5), w[kf]) if kf.sum() >= 2 else b_fill.copy()
+    if "filled_qty_terminal" in qtr.columns:
+        yqty = pd.to_numeric(qtr["filled_qty_terminal"], errors="coerce").to_numpy()
+    else:
+        req = pd.to_numeric(qtr["requested_qty"] if "requested_qty" in qtr else 1.0, errors="coerce")
+        if np.isscalar(req):
+            req = np.full(len(qtr), float(req))
+        else:
+            req = np.asarray(req, float)
+        yqty = req * frac
+    kq = np.isfinite(yqty)
+    b_qty = fit_ridge(Xs[kq], yqty[kq], w[kq], exclude_gap=False) if kq.sum() >= 10 else np.zeros(Xs.shape[1])
     unf = (lab == 0) & qtr["q_m30"].notna().values
     b_drift = fit_ridge(Xs[unf], qtr["q_m30"].values[unf], w[unf], exclude_gap=False) if unf.sum() >= 10 else np.zeros(Xs.shape[1])
     drift_hat = Xs @ b_drift
-    out = dict(scaler=sc, fill=b_fill, fill_any=b_fill, fill_fraction=b_frac, drift=b_drift)
+    out = dict(scaler=sc, fill=b_fill, fill_any=b_fill, fill_fraction=b_frac, filled_qty=b_qty, drift=b_drift)
     for name, col in (("mark_all", "m30_all"), ("mark_ef", "m30_ef")):
         has = (lab == 1) & qtr[col].notna().values
         y = qtr[col].values - drift_hat
@@ -228,6 +239,7 @@ def fit_all(qtr):
 def _model_dict(m):
     return dict(features=EXEC_FEATURES, scaler=m["scaler"], fill=list(map(float, m["fill"])),
                 fill_any=list(map(float, m["fill_any"])), fill_fraction=list(map(float, m["fill_fraction"])),
+                filled_qty=list(map(float, m["filled_qty"])),
                 mark_all=list(map(float, m["mark_all"])), mark_ef=list(map(float, m["mark_ef"])), drift=list(map(float, m["drift"])))
 
 
