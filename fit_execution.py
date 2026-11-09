@@ -35,6 +35,7 @@ from scipy.optimize import minimize
 
 import kalshi_exec_model as XM
 from kalshi_exec_model import EXEC_FEATURES, exec_features
+from execution_hazard import action_key
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 QUOTE_POLICY = "qp7"
@@ -257,6 +258,19 @@ def behaviour_probs(r):
     return {int(r.price): max(1e-6, _num(r, "propensity", 1.0))}
 
 
+def behaviour_action_probs(r):
+    """qp7 behavior probability over exact (price, requested_qty, TTL-bucket) actions."""
+    raw = getattr(r, "pi_b_action", None)
+    if isinstance(raw, str) and raw.strip().startswith("{"):
+        try:
+            return {str(k): float(v) for k, v in json.loads(raw).items()}
+        except (ValueError, TypeError):
+            return {}
+    if isinstance(raw, dict):
+        return {str(k): float(v) for k, v in raw.items()}
+    return {}
+
+
 def policy_rows(model, qte, extra=None):
     """Per held-out decision: the doubly-robust value of each target policy and whether it has observed support.
     Policies: the model's argmax QEV ('model'), bid+1 (join when spread < 2), join-the-bid, plus `extra` models.
@@ -270,10 +284,14 @@ def policy_rows(model, qte, extra=None):
         alpha = 100.0 * (_num(r, "p_used") - _num(r, "p_mkt"))
         fee = _num(r, "fee_c")
         pib = behaviour_probs(r)
+        pia = behaviour_action_probs(r)
         lad = sorted(set(ladder_of(r)) | set(pib))
         bid, ask = side_book_of(r)
         a = int(r.price)
-        pa = pib.get(a, max(1e-6, _num(r, "propensity", 1.0)))
+        qty = max(1, int(_num(r, "requested_qty", 1.0)))
+        ttl = _num(r, "ttl", 8.0)
+        pa = pia.get(action_key(a, qty, ttl), 0.0)
+        pa_safe = max(1e-6, pa)
         out = dict(game=r.game, date=r.date)
         for name, mdl in [("model", md)] + list(extra.items()):
             q = {px: XM.quote_value(mdl, features_at(r, px), alpha, fee)["qev"] for px in lad}
@@ -286,9 +304,10 @@ def policy_rows(model, qte, extra=None):
             qa = q.get(a, XM.quote_value(mdl, features_at(r, a), alpha, fee)["qev"])
             for k, p_ in tgt.items():
                 qp = q.get(p_, XM.quote_value(mdl, features_at(r, p_), alpha, fee)["qev"])
-                out[k] = qp + (rew - qa) * float(a == p_) / pa
-                out[f"{k}_sup"] = bool(pib.get(int(p_), 0.0) >= SUPPORT_EPS)
+                out[k] = qp + (rew - qa) * float(a == p_) / pa_safe
+                out[f"{k}_sup"] = bool(pia.get(action_key(int(p_), qty, ttl), 0.0) >= SUPPORT_EPS)
                 out[f"{k}_px"] = int(p_)
+                out[f"{k}_action"] = action_key(int(p_), qty, ttl)
         rows.append(out)
     return pd.DataFrame(rows)
 
