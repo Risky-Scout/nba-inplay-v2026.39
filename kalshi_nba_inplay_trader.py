@@ -1904,7 +1904,8 @@ def main():
     ap.add_argument("--no-fav-taper", action="store_true", help="Disable the favorite position-cap taper")
     ap.add_argument("--interval", type=int, default=15)
     ap.add_argument("--sims", type=int, default=8000, help="Paths per game state (states are cached; same state = same paths)")
-    ap.add_argument("--kelly", type=float, default=0.10, help="Kelly fraction (0.25 = quarter Kelly while the edge is unproven)")
+    ap.add_argument("--kelly", type=float, default=0.10, help="Base Kelly fraction; LIVE is hard-capped at 0.10 in v2026.39")
+    ap.add_argument("--adaptive-kelly", action="store_true", help="Optional: multiply base Kelly by prediction/execution health in [0,1]; never exceeds base")
     ap.add_argument("--as-buffer-c", type=float, default=0.5, help="Adverse-selection buffer, cents, added to the edge bar")
     ap.add_argument("--as-spread-frac", type=float, default=1.0,
                     help="Share of the spread captured by a resting bid that is assumed to be given back on fills "
@@ -2253,12 +2254,18 @@ def main():
                     f"others trade with the maker fee priced into EV.")
 
     dt_client = mg.DunksAndThreesClient(DT_API_KEY)
+    base_kelly_live = min(max(0.0, float(args.kelly)), 0.10) if args.live else max(0.0, float(args.kelly))
+    prediction_health = 1.0 if run_is_production else (0.75 if args.pilot_live else 1.0)
+    execution_health = 1.0 if exec_model else (0.65 if args.pilot_live else 1.0)
+    effective_kelly = base_kelly_live * prediction_health * execution_health if args.adaptive_kelly else base_kelly_live
+    effective_kelly = min(base_kelly_live, max(0.0, effective_kelly))
     qp = CorrelatedKellyQP(session_cap=args.session_cap, game_cap=args.game_cap, single_cap=args.single_cap,
                            half_kelly=True, fav_taper=not args.no_fav_taper, player_cap=args.player_cap,
-                           kelly_fraction=args.kelly, model_sd=args.model_risk_sd, stat_sd=args.stat_risk_sd,
+                           kelly_fraction=effective_kelly, model_sd=args.model_risk_sd, stat_sd=args.stat_risk_sd,
                            game_sd=args.game_risk_sd, team_sd=args.team_risk_sd, player_sd=args.player_risk_sd)
     explore_rng = np.random.default_rng(int(RUN_ID.replace("_", "")) % (2 ** 32))
     base_gamma = qp.gamma
+    logger.info(f"Kelly: configured {args.kelly:.3f} | live base {base_kelly_live:.3f} | effective {effective_kelly:.3f}" + (" (adaptive)" if args.adaptive_kelly else ""))
     tox_pause_until = 0.0
     positions = load_positions_from_ledger()
     if positions:
