@@ -635,6 +635,38 @@ FATIGUE_START_MIN, FATIGUE_SLOPE, FATIGUE_FLOOR = 9.0, 0.015, 0.92   # unchanged
 MINUTES_CV_BY_PHASE = {"Q1": 0.15, "Q2": 0.15, "Q3": 0.15, "Q4": 0.15}
 ROTATION_CV_BY_PHASE = {"Q1": 0.10, "Q2": 0.10, "Q3": 0.10, "Q4": 0.10}
 
+def _load_validated_engine_artifacts():
+    """Load only validated artifacts for this exact ENGINE_VERSION; otherwise preserve named safe defaults."""
+    global SHOT_MIX_KAPPA, ASSIST_ALPHA, PACE_TAU0, MINUTES_EVIDENCE_K
+    global FTA_ALPHA, TOV_ALPHA, ORB_ALPHA, DRB_ALPHA, MINUTES_CV_BY_PHASE, ROTATION_CV_BY_PHASE
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        p = os.path.join(here, "engine_priors.json")
+        d = json.load(open(p))
+        if d.get("validated") is True and d.get("engine_version") == ENGINE_VERSION:
+            x = d.get("params", {})
+            for name in ("SHOT_MIX_KAPPA","ASSIST_ALPHA","PACE_TAU0","MINUTES_EVIDENCE_K",
+                         "FTA_ALPHA","TOV_ALPHA","ORB_ALPHA","DRB_ALPHA"):
+                if name in x and np.isfinite(float(x[name])):
+                    globals()[name] = float(x[name])
+    except Exception:
+        pass
+    try:
+        p = os.path.join(here, "rotation_variance.json")
+        d = json.load(open(p))
+        if d.get("validated") is True and d.get("engine_version") == ENGINE_VERSION:
+            phase = d.get("phase", {})
+            for ph in ("Q1","Q2","Q3","Q4"):
+                if ph in phase:
+                    if "minutes_cv" in phase[ph]:
+                        MINUTES_CV_BY_PHASE[ph] = float(np.clip(phase[ph]["minutes_cv"], 0.05, 0.60))
+                    if "rotation_cv" in phase[ph]:
+                        ROTATION_CV_BY_PHASE[ph] = float(np.clip(phase[ph]["rotation_cv"], 0.03, 0.40))
+    except Exception:
+        pass
+
+_load_validated_engine_artifacts()
+
 
 def is_starter_now(p, box_row: Optional[dict], game_started: bool) -> bool:
     """Starter status, v2026.28: tonight's actual opening five once the game has started (NBA box 'starter' flag), else
