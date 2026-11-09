@@ -81,7 +81,7 @@ def standardize(scaler: dict, X: np.ndarray) -> np.ndarray:
 
 def model_id(model: dict) -> str:
     """Content hash of what the model predicts with (features, scaler, coefficients, training spec)."""
-    keep = {k: model.get(k) for k in ("features", "scaler", "fill_any", "fill_fraction", "fill", "mark_all", "mark_ef", "drift", "spec", "trained_through")}
+    keep = {k: model.get(k) for k in ("features", "scaler", "fill_any", "fill_fraction", "filled_qty", "fill", "mark_all", "mark_ef", "drift", "spec", "trained_through")}
     return hashlib.sha256(json.dumps(keep, sort_keys=True, default=str).encode()).hexdigest()[:12]
 
 
@@ -100,10 +100,16 @@ def quote_value(model: dict, x_raw: np.ndarray, alpha_c: float, fee_c: float, z:
     em = np.array([float(b @ xs) for b in bm[:k]])
     bfrac = np.asarray(model.get("fill_fraction", model.get("fill_any", model.get("fill"))), float)
     pfrac = float(_sig(bfrac @ xs))
+    qty_raw = max(1.0, float(np.asarray(x_raw, float)[EXEC_FEATURES.index("order_qty")]))
+    expected_filled_qty = float(np.clip(qty_raw * pfrac, 0.0, qty_raw))
+    if model.get("filled_qty") is not None:
+        direct_filled_qty = float(np.clip(np.asarray(model["filled_qty"], float) @ xs, 0.0, qty_raw))
+    else:
+        direct_filled_qty = expected_filled_qty
     qev = pf * (alpha_c + em - fee_c)
     use = slice(1, None) if k > 1 else slice(0, 1)            # draws for the spread, the point estimate for the mean
     sd = float(np.std(qev[use], ddof=1)) if k > 2 else 0.0
-    return dict(pf=float(pf[0]), fill_fraction=pfrac, em=float(em[0]), qev=float(qev[0]), qev_sd=sd, qev_lcb=float(qev[0]) - z * sd,
+    return dict(pf=float(pf[0]), fill_fraction=pfrac, expected_filled_qty=expected_filled_qty, direct_filled_qty=direct_filled_qty, em=float(em[0]), qev=float(qev[0]), qev_sd=sd, qev_lcb=float(qev[0]) - z * sd,
                 pf_sd=float(np.std(pf[use], ddof=1)) if k > 2 else 0.0, em_sd=float(np.std(em[use], ddof=1)) if k > 2 else 0.0)
 
 
