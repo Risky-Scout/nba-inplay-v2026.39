@@ -13,6 +13,7 @@ NBA In-Play Markov Chain Predictive Engine (v2026.18, calibrated)
 """
 
 import os
+import json
 import math
 from statistics import NormalDist
 import random
