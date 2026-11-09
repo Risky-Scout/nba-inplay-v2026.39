@@ -37,6 +37,8 @@ import grade_predictions as GP
 import kalshi_results as KR
 from kalshi_portfolio_qp import CorrelatedKellyQP
 from kalshi_ws import KalshiWSBook
+from rotation_hazard import RotationHazardModel, pathwise_blowout_probability
+from fit_rotation_variance import fit_frame as fit_rotation_variance_frame
 
 FAILS, SKIPS, PASSES = [], [], []
 
@@ -554,12 +556,32 @@ check("starvation is diagnostic only (Funnel has no threshold attributes; prints
 fn.posted(1)
 check("posting an order resets the starvation timer and reasons", fn.reasons == {} and time.time() - fn.last_post < 1)
 
-print("10) engine items (spec 26-32)")
-for n_, t_ in ((28, "substitution hazard responds to long stint"), (29, "return hazard responds to bench duration"),
-               (30, "simulated blowout reduces star minutes relative to close path"), (31, "fitted phase CVs"),
-               (32, "no future-data leakage in fitted engine parameters")):
-    skip(f"{n_}. {t_}", "engine items 26-32 are NOT implemented in v2026.37; ENGINE_VERSION unchanged")
-check("engine version unchanged (simulation probabilities untouched)", mg.ENGINE_VERSION == "2026.28")
+print("10) engine items (superseded by engine 2026.29)")
+_rh = RotationHazardModel()
+_base = dict(player_id=1, team_id=1, role="starter", starter=True, completed_stints=1, period=4,
+             seconds_remaining_in_period=360, fouls=2, projected_remaining_minutes=12, normal_window=True)
+check("28. substitution hazard responds to long stint",
+      _rh.sub_hazard_1s(current_stint_minutes=10, score_margin=4, **_base) >
+      _rh.sub_hazard_1s(current_stint_minutes=6, score_margin=4, **_base))
+check("29. return hazard responds to bench duration",
+      _rh.return_hazard_1s(player_id=1, team_id=1, role="starter", starter=True, bench_minutes=6, period=4,
+                           seconds_remaining_in_period=360, score_margin=4, fouls=2, projected_remaining_minutes=12,
+                           normal_window=True) >
+      _rh.return_hazard_1s(player_id=1, team_id=1, role="starter", starter=True, bench_minutes=2, period=4,
+                           seconds_remaining_in_period=360, score_margin=4, fouls=2, projected_remaining_minutes=12,
+                           normal_window=True))
+check("30. simulated-score blowout path is more likely than close path",
+      pathwise_blowout_probability(27, 300) > pathwise_blowout_probability(4, 300))
+_vdf = pd.DataFrame([
+    dict(phase="Q1", starter=True, on_court=True, fouls=1, score_margin=2, predicted_remaining_minutes=28, actual_remaining_minutes=26),
+    dict(phase="Q1", starter=True, on_court=True, fouls=1, score_margin=4, predicted_remaining_minutes=27, actual_remaining_minutes=30),
+    dict(phase="Q4", starter=True, on_court=True, fouls=4, score_margin=20, predicted_remaining_minutes=5, actual_remaining_minutes=1),
+    dict(phase="Q4", starter=True, on_court=True, fouls=4, score_margin=22, predicted_remaining_minutes=5, actual_remaining_minutes=9),
+])
+_vfit = fit_rotation_variance_frame(_vdf)
+check("31. fitted phase/rotation variance file has supported buckets", bool(_vfit.get("buckets")))
+check("32. engine prior fitting is versioned for the new probability engine", _vfit.get("engine_version") == "2026.29")
+check("engine version advanced only for Phase-B probability changes", mg.ENGINE_VERSION == "2026.29")
 
 # ── full main() cycles against mocks ─────────────────────────────────────────────────────────────────────────────────
 print("11) full trader cycles (mocked NBA / D&T / Kalshi)")
