@@ -53,7 +53,13 @@ def _read(pattern, here=HERE):
 
 
 def label_quotes(q: pd.DataFrame, ev: pd.DataFrame) -> pd.DataFrame:
-    """qp7 quantity labels. Non-terminal episodes remain censored."""
+    """qp7 labels.
+
+    Any observed fill is immediately a positive for the any-fill model.
+    Terminal-unfilled is a negative.  Terminal fill fraction/filled quantity
+    are trained only after terminal proof; unresolved partial fills remain
+    censored for the fraction target.
+    """
     q = q.copy()
     if "requested_qty" not in q.columns:
         q["requested_qty"] = 1
@@ -71,6 +77,7 @@ def label_quotes(q: pd.DataFrame, ev: pd.DataFrame) -> pd.DataFrame:
     e = ev.copy()
     e["order_id"] = e["order_id"].astype(str)
     fills = e[e["event"].astype(str) == "fill"].copy()
+    fill_ids = set(fills["order_id"].astype(str))
     if len(fills):
         if "contracts" in fills.columns:
             fqty = pd.to_numeric(fills["contracts"], errors="coerce").fillna(0)
@@ -85,12 +92,13 @@ def label_quotes(q: pd.DataFrame, ev: pd.DataFrame) -> pd.DataFrame:
     term_ids = set(term["order_id"].astype(str))
     fq = oid.map(fill_sum).fillna(0.0)
     terminal = oid.isin(term_ids)
+    observed_fill = oid.isin(fill_ids)
     q["filled_qty_terminal"] = np.where(terminal, fq, np.nan)
     q["fill_fraction"] = np.where(terminal, np.minimum(1.0, fq / q["requested_qty"]), np.nan)
-    q["any_fill"] = np.where(terminal, (fq > 0).astype(float), np.nan)
+    q["any_fill"] = np.where(observed_fill, 1.0, np.where(terminal, 0.0, np.nan))
     q["fully_filled"] = np.where(terminal, (fq >= q["requested_qty"]).astype(float), np.nan)
     q["label"] = q["any_fill"]
-    q["status"] = np.where(~terminal, "CENSORED", np.where(fq > 0, "FILLED", "TERMINAL_UNFILLED"))
+    q["status"] = np.where(observed_fill, "FILLED", np.where(terminal, "TERMINAL_UNFILLED", "CENSORED"))
     return q
 def load(here=HERE):
     q, ev, mk, qm = (_read("kalshi_quotes_*.csv", here), _read("kalshi_quote_events_*.csv", here),
@@ -194,7 +202,11 @@ def fit_all(qtr):
     sc = XM.fit_scaler(X)
     Xs = XM.standardize(sc, X)
     lab = qtr["label"].values
-    frac = pd.to_numeric(qtr.get("fill_fraction"), errors="coerce").values
+    if "fill_fraction" in qtr.columns:
+        frac = pd.to_numeric(qtr["fill_fraction"], errors="coerce").to_numpy()
+    else:
+        # Legacy qp6/one-contract research rows: binary fill is the exact fraction.
+        frac = pd.to_numeric(qtr["label"], errors="coerce").to_numpy()
     known = ~np.isnan(lab)
     w = 1.0 / np.clip(pd.to_numeric(qtr.get("propensity", 1.0), errors="coerce").fillna(1.0).values, 0.05, 1.0)
     b_fill = fit_logit(Xs[known], lab[known], w[known]) if known.sum() >= 2 else np.zeros(Xs.shape[1])
