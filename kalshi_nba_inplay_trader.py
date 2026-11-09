@@ -159,7 +159,8 @@ MARKOUT_CSV = os.path.join(CURRENT_DIR, f"kalshi_markouts_{TODAY_STR}.csv")
 ELIGIBLE_CSV = os.path.join(CURRENT_DIR, f"kalshi_eligible_{TODAY_STR}.csv")     # every trade-policy-eligible candidate
 QUOTES_CSV = os.path.join(CURRENT_DIR, f"kalshi_quotes_{TODAY_STR}.csv")         # every order posted (fill-model data)
 QUOTE_EVENTS_CSV = os.path.join(CURRENT_DIR, f"kalshi_quote_events_{TODAY_STR}.csv")  # cancel (with reason) / fill per order
-QUOTE_MARKS_CSV = os.path.join(CURRENT_DIR, f"kalshi_quote_marks_{TODAY_STR}.csv")    # v2026.37: 30 s mid move after every quote
+QUOTE_MARKS_CSV = os.path.join(CURRENT_DIR, f"kalshi_quote_marks_{TODAY_STR}.csv")
+QUEUE_HISTORY_CSV = os.path.join(CURRENT_DIR, f"kalshi_queue_history_{TODAY_STR}.csv")    # v2026.37: 30 s mid move after every quote
 JOURNAL_JSON = os.path.join(CURRENT_DIR, "kalshi_orders_journal.json")          # unresolved orders survive a crash
 CAL_JSON = os.path.join(CURRENT_DIR, "calibration.json")
 EXEC_PRIORS_JSON = os.path.join(CURRENT_DIR, "exec_priors.json")
@@ -1211,6 +1212,44 @@ def quote_event(oid: str, bet: dict, event: str, reason: str = "", contracts: fl
         csv_append(QUOTE_EVENTS_CSV, [row])
     except Exception:
         pass
+
+
+def queue_history_log(oid: str, bet: dict, ws) -> None:
+    """One qp7 queue-state observation for discrete-time hazard fitting."""
+    try:
+        q = ws.queue_estimate(oid)
+        b = ws.best(bet["ticker"])
+        if not q or b is None:
+            return
+        yb, yq, ya, aq, _age = b
+        if bet["side"] == "yes":
+            sbid, sask, qbid, qask = yb, ya, yq, aq
+        else:
+            sbid, sask, qbid, qask = 100 - ya, 100 - yb, aq, yq
+        spread = max(1.0, float(sask - sbid))
+        px = int(bet["price_cents"])
+        qty = max(1, int(bet.get("requested_qty", bet.get("count", 1))))
+        depth = max(float(qbid), 1.0)
+        qahead = max(float(q.get("queue_ahead_est", 0.0)), 1.0)
+        micro = ws.micro(bet["ticker"])
+        row = dict(
+            time=datetime.now().isoformat(timespec="milliseconds"), order_id=oid, ticker=bet["ticker"],
+            run_id=RUN_ID, quote_policy=QUOTE_POLICY, policy_family_id=POLICY["policy_family_id"],
+            side=bet["side"], price=px, requested_qty=qty, size_bucket=bet.get("size_bucket", size_bucket(qty)),
+            remaining_ttl=max(0.0, float(bet.get("expiration_ts", time.time())) - time.time()),
+            queue_ahead_est=float(q.get("queue_ahead_est", 0.0)),
+            queue_depletion_rate=float(q.get("queue_depletion_rate", 0.0)),
+            seconds_at_price=float(q.get("seconds_at_price", 0.0)),
+            price_level_resets=int(q.get("price_level_resets", 0)),
+            spread=spread, aggr=(px - sbid) / spread,
+            imbalance=(float(qbid) - float(qask)) / max(float(qbid) + float(qask), 1e-9),
+            mid_velocity=float(micro.get("mid_vel_1s", 0.0)), best_depth=float(qbid),
+            t_since_action_s=float(bet.get("t_since_action_s", 0.0) or 0.0),
+            stop=str(bet.get("stop", "other") or "other"),
+            qty_over_best_depth=qty / depth, qty_over_queue_ahead=qty / qahead)
+        csv_append(QUEUE_HISTORY_CSV, [row])
+    except Exception as e:
+        logger.debug(f"queue-history log failed for {oid}: {e}")
 
 
 def daily_pnl(by_ticker: Dict[str, "KalshiMarket"], last_mid: Dict[str, float], fee_fn=None, liquidation: bool = False) -> float:
@@ -2553,6 +2592,9 @@ def main():
                         live_tk = {b["ticker"] for b in book.resting.values()}
                         hit = pend & live_tk
                         if hit:
+                            for _oid, _bet in list(book.resting.items()):
+                                if _bet.get("ticker") in hit:
+                                    queue_history_log(_oid, _bet, kalshi.ws)
                             _fc = book.fast_checks(tickers=hit)
                             if _fc:
                                 logger.info(f"[MARKET CLOCK] book changed under resting quotes: {_fc}")
