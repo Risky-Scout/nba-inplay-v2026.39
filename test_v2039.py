@@ -12,6 +12,7 @@ from execution_size_authority import size_bucket, highest_authorized_qty
 from execution_hazard import cumulative_fill_probability, action_key
 from rotation_hazard import RotationHazardModel, pathwise_blowout_probability
 import residual_alpha as RA
+from kalshi_ws import KalshiWSBook
 
 fails=[]
 def ck(name,cond,detail=""):
@@ -45,6 +46,23 @@ ck("QTY1 cannot authorize QTY7PLUS",highest_authorized_qty(10,auth,True)==3)
 ck("size fallback never increases",highest_authorized_qty(2,auth,True)<=2)
 ck("exact action includes qty+TTL",action_key(50,1,8)!=action_key(50,2,8) and action_key(50,1,8)!=action_key(50,1,12))
 ck("cumulative fill increases with horizon",cumulative_fill_probability([.1]*10)>cumulative_fill_probability([.1]*5))
+
+# Queue progression: depletion moves us forward; additions after submission are behind; disappearance/reappearance resets.
+_wb = KalshiWSBook(lambda: {})
+_wb.want = {"Q"}
+_wb._handle({"type":"orderbook_snapshot","sid":1,"seq":1,"msg":{
+    "market_ticker":"Q","yes_dollars_fp":[["0.50","10"]],"no_dollars_fp":[["0.45","10"]]}})
+_wb.start_queue_estimate("o","Q","yes",50,initial_depth=10)
+_wb._handle({"type":"orderbook_delta","sid":1,"seq":2,"msg":{"market_ticker":"Q","price_dollars":"0.50","delta_fp":"-3","side":"yes"}})
+_q1 = _wb.queue_estimate("o")
+ck("queue ahead decreases on depth depletion", abs(_q1["queue_ahead_est"]-7.0)<1e-9, str(_q1))
+_wb._handle({"type":"orderbook_delta","sid":1,"seq":3,"msg":{"market_ticker":"Q","price_dollars":"0.50","delta_fp":"5","side":"yes"}})
+_q2 = _wb.queue_estimate("o")
+ck("additions after submission are not assumed ahead", abs(_q2["queue_ahead_est"]-7.0)<1e-9, str(_q2))
+_wb._handle({"type":"orderbook_delta","sid":1,"seq":4,"msg":{"market_ticker":"Q","price_dollars":"0.50","delta_fp":"-12","side":"yes"}})
+_wb._handle({"type":"orderbook_delta","sid":1,"seq":5,"msg":{"market_ticker":"Q","price_dollars":"0.50","delta_fp":"4","side":"yes"}})
+_q3 = _wb.queue_estimate("o")
+ck("price-level reset invalidates prior queue priority", _q3["price_level_resets"]==1 and abs(_q3["queue_ahead_est"]-4.0)<1e-9, str(_q3))
 
 rh=RotationHazardModel()
 base=dict(player_id=1,team_id=1,role="starter",starter=True,completed_stints=1,period=4,seconds_remaining_in_period=360,
