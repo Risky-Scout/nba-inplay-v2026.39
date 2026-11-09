@@ -33,3 +33,15 @@ class RotationHazardModel:
         return _sig(z)
     @staticmethod
     def within(p,sec):return float(1-(1-np.clip(p,0,1))**int(sec))
+
+def pathwise_blowout_probability(score_margin, seconds_remaining_in_game):
+    """Probability of using a deep-bench rotation path at the next boundary.
+    Uses absolute margin for blowout likelihood; sign is preserved elsewhere for team perspective.
+    """
+    a=abs(float(score_margin)); t=float(seconds_remaining_in_game)
+    if t>1440:return 0.02 if a>=25 else 0.0
+    if t>720:
+        return 0.18 if a>=25 else (0.05 if a>=16 else 0.0)
+    if t>360:
+        return 0.45 if a>=25 else (0.16 if a>=16 else (0.04 if a>=9 else 0.0))
+    return 0.88 if a>=25 else (0.42 if a>=16 else (0.10 if a>=9 else 0.0))
