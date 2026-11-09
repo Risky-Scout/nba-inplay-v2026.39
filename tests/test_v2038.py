@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""v2026.38 checks: one canonical production authorization, policy-family-specific execution evidence (markout gate,
+"""v2026.39 checks: one canonical production authorization, policy-family-specific execution evidence (markout gate,
 execution prior, sizing excluded from the family), the game-clustered sign-flip null test used for FDR, frozen discovery
 -> later confirmation of PRODUCTION cells, behaviour-policy logging with action-support-restricted doubly robust
 evaluation, and champion promotion on a clustered lower bound.
@@ -48,9 +48,9 @@ def clean():
         os.remove(f)
 
 
-check("versions: trader v2026.38, quote policy qp6, engine unchanged (2026.28)",
-      T.TRADER_VERSION == "v2026.38" and T.QUOTE_POLICY == "qp6" and FE.QUOTE_POLICY == "qp6" and GP.QUOTE_POLICY == "qp6"
-      and mg.ENGINE_VERSION == "2026.28")
+check("versions: trader v2026.39, quote policy qp6, engine unchanged (2026.28)",
+      T.TRADER_VERSION == "v2026.39" and T.QUOTE_POLICY == "qp7" and FE.QUOTE_POLICY == "qp7" and GP.QUOTE_POLICY == "qp7"
+      and mg.ENGINE_VERSION == "2026.29")
 
 # ── P0-1: one canonical production authorization ────────────────────────────────────────────────────────────────────
 print("1) canonical production authorization")
@@ -88,7 +88,7 @@ clean()
 def marks(fam, mean, n=60, games=12, seed=0):
     r = np.random.default_rng(seed)
     return [dict(order_id=f"{fam}{i}", ticker=f"KXNBAPTS-26NOV0{1 + i % 3}G{i % games:02d}XX-{i}", side="yes", price=50,
-                 contracts=1, maker=True, mode="LIVE", quote_policy="qp6", arm="base", policy_family_id=fam,
+                 contracts=1, maker=True, mode="LIVE", quote_policy="qp7", arm="base", policy_family_id=fam,
                  m30=mean + r.normal(0, 0.5), m30_event="false", p_mkt=0.52, m5=0, m15=0, m120=0) for i in range(n)]
 
 
@@ -246,7 +246,7 @@ def synth_quotes(n=600, seed=4, dates=("20261101", "20261102", "20261103", "2026
                         p_used=0.55, p_mkt=0.52, fee_c=0.0, propensity=float(pib[str(px)]),
                         pi_b=json.dumps(pib) if log_pi else None, run_id=dates[i % len(dates)] + "_190000",
                         label=float(filled), m30_all=m30 if filled else np.nan, m30_ef=np.nan, q_m30=np.nan if filled else drift,
-                        quote_policy="qp6", arm="base"))
+                        quote_policy="qp7", arm="base"))
     q = pd.DataFrame(out)
     q["date"] = q["run_id"].str[:8]
     q["game"] = q["ticker"].str.split("-").str[1]
@@ -320,4 +320,4 @@ print(f"\n{len(PASSES)} passed, {len(FAILS)} failed")
 if FAILS:
     print("FAILED:", FAILS)
     sys.exit(1)
-print("ALL v2026.38 CHECKS PASSED")
+print("ALL v2026.39 CHECKS PASSED")
