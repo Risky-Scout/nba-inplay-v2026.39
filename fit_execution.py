@@ -37,7 +37,7 @@ import kalshi_exec_model as XM
 from kalshi_exec_model import EXEC_FEATURES, exec_features
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-QUOTE_POLICY = "qp6"
+QUOTE_POLICY = "qp7"
 MIN_QUOTES, MIN_FILLS, MIN_MARKS, MIN_VAL_FILLS, MIN_DATES = 300, 40, 30, 10, 2
 L2 = 1.0
 N_BOOT = 30
@@ -53,24 +53,45 @@ def _read(pattern, here=HERE):
 
 
 def label_quotes(q: pd.DataFrame, ev: pd.DataFrame) -> pd.DataFrame:
-    """label = 1 FILLED, 0 TERMINAL_UNFILLED, NaN CENSORED (excluded from the fill model)."""
+    """qp7 quantity labels. Non-terminal episodes remain censored."""
     q = q.copy()
+    if "requested_qty" not in q.columns:
+        q["requested_qty"] = 1
+        print("WARNING: old execution rows missing requested_qty; imputing 1 for training only")
+    q["requested_qty"] = pd.to_numeric(q["requested_qty"], errors="coerce").fillna(1).clip(lower=1)
     oid = q["order_id"].astype(str)
     if ev.empty:
         q["label"] = np.nan
         q["status"] = "CENSORED"
+        q["filled_qty_terminal"] = np.nan
+        q["fill_fraction"] = np.nan
+        q["any_fill"] = np.nan
+        q["fully_filled"] = np.nan
         return q
-    ev = ev.assign(order_id=ev["order_id"].astype(str))
-    filled = set(ev.loc[ev["event"].astype(str) == "fill", "order_id"])
-    term = ev[ev["event"].astype(str) == "terminal"]
-    st = term["reason"].astype(str).str.split(":").str[0] if len(term) else pd.Series(dtype=str)
-    unf = set(term.loc[st.isin(TERMINAL_UNFILLED).values & (pd.to_numeric(term["filled"], errors="coerce").fillna(0) <= 0).values, "order_id"]) \
-        if len(term) else set()
-    q["label"] = np.where(oid.isin(filled), 1.0, np.where(oid.isin(unf), 0.0, np.nan))
-    q["status"] = np.where(q["label"] == 1, "FILLED", np.where(q["label"] == 0, "TERMINAL_UNFILLED", "CENSORED"))
+    e = ev.copy()
+    e["order_id"] = e["order_id"].astype(str)
+    fills = e[e["event"].astype(str) == "fill"].copy()
+    if len(fills):
+        if "contracts" in fills.columns:
+            fqty = pd.to_numeric(fills["contracts"], errors="coerce").fillna(0)
+        elif "filled" in fills.columns:
+            fqty = pd.to_numeric(fills["filled"], errors="coerce").fillna(0)
+        else:
+            fqty = pd.Series(1.0, index=fills.index)
+        fill_sum = fills.assign(_fq=fqty).groupby("order_id")["_fq"].sum()
+    else:
+        fill_sum = pd.Series(dtype=float)
+    term = e[e["event"].astype(str) == "terminal"].copy()
+    term_ids = set(term["order_id"].astype(str))
+    fq = oid.map(fill_sum).fillna(0.0)
+    terminal = oid.isin(term_ids)
+    q["filled_qty_terminal"] = np.where(terminal, fq, np.nan)
+    q["fill_fraction"] = np.where(terminal, np.minimum(1.0, fq / q["requested_qty"]), np.nan)
+    q["any_fill"] = np.where(terminal, (fq > 0).astype(float), np.nan)
+    q["fully_filled"] = np.where(terminal, (fq >= q["requested_qty"]).astype(float), np.nan)
+    q["label"] = q["any_fill"]
+    q["status"] = np.where(~terminal, "CENSORED", np.where(fq > 0, "FILLED", "TERMINAL_UNFILLED"))
     return q
-
-
 def load(here=HERE):
     q, ev, mk, qm = (_read("kalshi_quotes_*.csv", here), _read("kalshi_quote_events_*.csv", here),
                      _read("kalshi_markouts_*.csv", here), _read("kalshi_quote_marks_*.csv", here))
@@ -123,7 +144,8 @@ def features_at(r, price):
     return exec_features(r.side, str(r.stat), int(_num(r, "period")), bid, ask, int(price), gap, ttl_s=_num(r, "ttl", 8.0),
                          stop=str(getattr(r, "stop", "other") or "other"), phase=str(getattr(r, "phase", "") or "") or None,
                          qty_bid=qsb, qty_ask=qsa, queue_ahead=qsb if int(price) == bid else 0.0,
-                         book_age_s=_num(r, "book_age_ms") / 1000.0, t_since_action_s=_num(r, "t_since_action_s"), micro=micro)
+                         book_age_s=_num(r, "book_age_ms") / 1000.0, t_since_action_s=_num(r, "t_since_action_s"), micro=micro,
+                         order_qty=_num(r, "requested_qty", 1.0), best_depth=qsb)
 
 
 def design(q):
@@ -172,13 +194,16 @@ def fit_all(qtr):
     sc = XM.fit_scaler(X)
     Xs = XM.standardize(sc, X)
     lab = qtr["label"].values
+    frac = pd.to_numeric(qtr.get("fill_fraction"), errors="coerce").values
     known = ~np.isnan(lab)
     w = 1.0 / np.clip(pd.to_numeric(qtr.get("propensity", 1.0), errors="coerce").fillna(1.0).values, 0.05, 1.0)
     b_fill = fit_logit(Xs[known], lab[known], w[known]) if known.sum() >= 2 else np.zeros(Xs.shape[1])
+    kf = np.isfinite(frac)
+    b_frac = fit_logit(Xs[kf], np.clip(frac[kf], 1e-5, 1 - 1e-5), w[kf]) if kf.sum() >= 2 else b_fill.copy()
     unf = (lab == 0) & qtr["q_m30"].notna().values
     b_drift = fit_ridge(Xs[unf], qtr["q_m30"].values[unf], w[unf], exclude_gap=False) if unf.sum() >= 10 else np.zeros(Xs.shape[1])
     drift_hat = Xs @ b_drift
-    out = dict(scaler=sc, fill=b_fill, drift=b_drift)
+    out = dict(scaler=sc, fill=b_fill, fill_any=b_fill, fill_fraction=b_frac, drift=b_drift)
     for name, col in (("mark_all", "m30_all"), ("mark_ef", "m30_ef")):
         has = (lab == 1) & qtr[col].notna().values
         y = qtr[col].values - drift_hat
@@ -188,8 +213,9 @@ def fit_all(qtr):
 
 
 def _model_dict(m):
-    return dict(features=EXEC_FEATURES, scaler=m["scaler"], fill=list(map(float, m["fill"])), mark_all=list(map(float, m["mark_all"])),
-                mark_ef=list(map(float, m["mark_ef"])), drift=list(map(float, m["drift"])))
+    return dict(features=EXEC_FEATURES, scaler=m["scaler"], fill=list(map(float, m["fill"])),
+                fill_any=list(map(float, m["fill_any"])), fill_fraction=list(map(float, m["fill_fraction"])),
+                mark_all=list(map(float, m["mark_all"])), mark_ef=list(map(float, m["mark_ef"])), drift=list(map(float, m["drift"])))
 
 
 def ladder_of(r):
