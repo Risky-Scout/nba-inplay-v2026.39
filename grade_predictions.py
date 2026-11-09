@@ -26,6 +26,7 @@ import pandas as pd
 from kalshi_results import load_predictions, settlements
 from nba_markov_engine import ENGINE_VERSION
 from execution_size_authority import write_authority, size_bucket
+from nightly_reports import write_all as write_nightly_reports
 
 GATE_MARKETS, GATE_EDGE_C, GATE_GAMES = 300, 2.0, 15
 QUOTE_POLICY = "qp7"   # must match kalshi_nba_inplay_trader.QUOTE_POLICY: priors learned under another policy are not reused
@@ -723,6 +724,7 @@ def main():
     funnel_report()
     pol = current_policy()
     size_auth = size_authority_report(pol)
+    nightly = write_nightly_reports(os.path.dirname(os.path.abspath(__file__)), res)
     auth = production_authorization(sanity, fills, mgate, pol)
     passed = auth["passed"]
     # diagnostic only (v2026.38): "the whole model beats Kalshi everywhere" no longer authorizes anything
@@ -731,7 +733,7 @@ def main():
                      rule=f"diagnostic: global edge 90% CI low > 0 and mean >= {GATE_EDGE_C}c (NOT an authorization gate)")
     print(f"   GLOBAL MODEL DOMINANCE (diagnostic, not a gate): {'yes' if dominance['passed'] else 'no'}")
     status = dict(gate, passed=passed, authorization=auth, engine_sanity=sanity, global_model_dominance=dominance, strategy=strat,
-                  fills=fills, markout_gate=mgate, size_authority=size_auth, spread_giveback=giveback,
+                  fills=fills, markout_gate=mgate, size_authority=size_auth, nightly_reports=nightly, spread_giveback=giveback,
                   quote_policy=QUOTE_POLICY, policy=pol, engine=ENGINE_VERSION, generated=datetime.now().isoformat(timespec="seconds"),
                   rule=AUTH_RULE)
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_status.json"), "w") as f:
