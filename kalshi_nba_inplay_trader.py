@@ -3008,7 +3008,8 @@ def main():
                     # optimizer only the --max-strikes best strikes per (player, stat, side), ranked by expected realized
                     # alpha = P(fill) x conditional edge (not by LCB alone), so one view is not bought several times.
                     _mine = candidates[n_cand0:]
-                    _groups: Dict[tuple, list] = {}                    for _c in _mine:
+                    _groups: Dict[tuple, list] = {}
+                    for _c in _mine:
                         _groups.setdefault((_c["player_id"], _c["stat"], _c["side"]), []).append(_c)
                     _keep = []
                     for _g in _groups.values():
