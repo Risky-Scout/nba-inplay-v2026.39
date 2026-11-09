@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""v2026.39 / engine 2026.29 regression checks."""
+import json, os, tempfile
+import numpy as np, pandas as pd
+import kalshi_exec_model as XM
+import fit_execution as FE
+import grade_predictions as GP
+import kalshi_nba_inplay_trader as T
+import nba_markov_engine as MG
+from kalshi_portfolio_qp import CorrelatedKellyQP
+from execution_size_authority import size_bucket, highest_authorized_qty
+from execution_hazard import cumulative_fill_probability, action_key
+from rotation_hazard import RotationHazardModel, pathwise_blowout_probability
+import residual_alpha as RA
+
+fails=[]
+def ck(name,cond,detail=""):
+    print(("  [ok] " if cond else "  [FAIL] ")+name+(f" ({detail})" if detail else ""))
+    if not cond:fails.append(name)
+
+ck("versions",T.TRADER_VERSION=="v2026.39" and T.QUOTE_POLICY=="qp7" and FE.QUOTE_POLICY=="qp7" and GP.QUOTE_POLICY=="qp7" and MG.ENGINE_VERSION=="2026.29")
+for k in ("order_qty","qty_over_best_depth","qty_over_queue_ahead","log_order_qty"):
+    ck("execution feature "+k,k in XM.EXEC_FEATURES)
+
+x1=XM.exec_features("yes","PTS",3,45,50,46,4,ttl_s=8,qty_bid=20,qty_ask=20,queue_ahead=20,order_qty=1,best_depth=20)
+x10=XM.exec_features("yes","PTS",3,45,50,46,4,ttl_s=8,qty_bid=20,qty_ask=20,queue_ahead=20,order_qty=10,best_depth=20)
+ck("quantity changes feature vector",not np.allclose(x1,x10))
+
+with tempfile.TemporaryDirectory() as td:
+    p=os.path.join(td,"old.json")
+    json.dump({"quote_policy":"qp7","validated":True,"features":[x for x in XM.EXEC_FEATURES if x!="order_qty"],
+               "scaler":{"mean":[0],"sd":[1]},"fill":[0],"mark_all":[0]},open(p,"w"))
+    ck("old exec schema cannot load under qp7",XM.load_model(p,"qp7") is None)
+
+q=pd.DataFrame([{"order_id":"a","requested_qty":10}])
+ev=pd.DataFrame([{"order_id":"a","event":"fill","contracts":1,"reason":"","filled":1},
+                 {"order_id":"a","event":"terminal","contracts":0,"reason":"CANCELLED_CONFIRMED: x","filled":1}])
+lab=FE.label_quotes(q,ev)
+ck("partial fill fraction",abs(float(lab.iloc[0]["fill_fraction"])-.1)<1e-12)
+ck("partial fill remains any-fill",float(lab.iloc[0]["any_fill"])==1 and float(lab.iloc[0]["fully_filled"])==0)
+
+ck("size buckets",[size_bucket(x) for x in [1,2,4,7]]==["QTY1","QTY2_3","QTY4_6","QTY7PLUS"])
+auth={"buckets":{"QTY1":{"status":"PRODUCTION"},"QTY2_3":{"status":"PRODUCTION"},"QTY4_6":{"status":"PILOT"},"QTY7PLUS":{"status":"RESEARCH"}}}
+ck("QTY1 cannot authorize QTY7PLUS",highest_authorized_qty(10,auth,True)==3)
+ck("size fallback never increases",highest_authorized_qty(2,auth,True)<=2)
+ck("exact action includes qty+TTL",action_key(50,1,8)!=action_key(50,2,8) and action_key(50,1,8)!=action_key(50,1,12))
+ck("cumulative fill increases with horizon",cumulative_fill_probability([.1]*10)>cumulative_fill_probability([.1]*5))
+
+rh=RotationHazardModel()
+base=dict(player_id=1,team_id=1,role="starter",starter=True,completed_stints=1,period=4,seconds_remaining_in_period=360,
+          fouls=2,projected_remaining_minutes=12,normal_window=True)
+ck("long stint raises sub hazard",rh.sub_hazard_1s(current_stint_minutes=10,score_margin=4,**base)>rh.sub_hazard_1s(current_stint_minutes=6,score_margin=4,**base))
+ck("Q4 blowout raises star sub hazard",rh.sub_hazard_1s(current_stint_minutes=7,score_margin=27,**base)>rh.sub_hazard_1s(current_stint_minutes=7,score_margin=4,**base))
+ck("pathwise blowout probability responds to simulated score",pathwise_blowout_probability(27,300)>pathwise_blowout_probability(4,300))
+
+prof=MG.DTPlayerSkillProfile(1,"P",1,3,78,210,100,32,.25,8,6,7,6,5,3,2,6,1,1,.65,.42,.36,.8,1,0,1)
+eng=MG.InPlayMarkovEngine(MG.LiveInPlayState("g","g","Q1 12:00",1,2880,1,2,"H","A",0,0,"HOME",[],[],{}),[prof],[MG.DTPlayerSkillProfile(2,"Q",2,3,78,210,100,32,.25,8,6,7,6,5,3,2,6,1,1,.65,.42,.36,.8,1,0,1)],0,0,calib={1:{"PTS":1.2,"3PM":.9,"REB":1.1,"AST":1.15}})
+cp=eng._calibrated_profile(prof)
+ck("generative calibration changes attempt intensity",cp.p_fga_rim_100>prof.p_fga_rim_100 and cp.p_fg3a_100<prof.p_fg3a_100)
+ck("generative calibration does not change shooting efficiency",cp.p_fgpct_rim==prof.p_fgpct_rim and cp.p_fg3pct==prof.p_fg3pct)
+ck("legacy post calibration disabled by default",eng.legacy_post_calibration is False)
+
+X=np.zeros((2,len(RA.FEATURES))); p=np.array([.3,.6])
+ck("residual alpha uses fixed market offset",np.allclose(RA.predict({"beta":[0]*len(RA.FEATURES)},p,X),p))
+
+src=open("kalshi_nba_inplay_trader.py").read()
+ck("live Kelly hard cap exists",'min(max(0.0, float(args.kelly)), 0.10) if args.live' in src)
+ck("post-sizing size authority exists","highest_authorized_qty(_req, size_authority" in src)
+ck("full-notional CVaR remains after size rescore","cvar_scale(orders, _others" in src)
+
+if fails:
+    print("FAILED:",fails); raise SystemExit(1)
+print("ALL v2026.39 CHECKS PASSED")
