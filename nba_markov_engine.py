@@ -138,6 +138,12 @@ class LivePBPContext:
     live_rim_fga: Dict[int, int] = field(default_factory=dict)
     live_mid_fga: Dict[int, int] = field(default_factory=dict)
     live_3pt_fga: Dict[int, int] = field(default_factory=dict)
+    live_fta: Dict[int, int] = field(default_factory=dict)
+    live_tov: Dict[int, int] = field(default_factory=dict)
+    live_orb: Dict[int, int] = field(default_factory=dict)
+    live_drb: Dict[int, int] = field(default_factory=dict)
+    live_orb_opportunities: Dict[int, int] = field(default_factory=dict)  # keyed by team_id
+    live_drb_opportunities: Dict[int, int] = field(default_factory=dict)  # keyed by team_id
     current_stint_minutes: Dict[int, float] = field(default_factory=dict)
     completed_stints: Dict[int, int] = field(default_factory=dict)
     last_action_type: str = ""
@@ -197,6 +203,8 @@ class NBALivePlayByPlayParser:
 
         assist_pairs = {}
         live_rim_fga, live_mid_fga, live_3pt_fga = {}, {}, {}
+        live_fta, live_tov, live_orb, live_drb = {}, {}, {}, {}
+        miss_by_team = {}
         last_sub_in_sec, subbed, completed = {}, set(), {}
         last_poss_team_id, last_active_player_id = None, None
         last_type, last_num = "", 0
@@ -204,7 +212,10 @@ class NBALivePlayByPlayParser:
         for act in actions:
             last_type, last_num = str(act.get("actionType", "")), int(act.get("actionNumber", 0) or 0)
             act_type = act.get("actionType", "")
+            act_type_l = str(act_type).lower().replace("_", "")
             sub_type = act.get("subType", "")
+            sub_type_l = str(sub_type).lower()
+            team_id = int(act.get("teamId", act.get("teamId", 0)) or 0)
             pid = int(act.get("personId", 0) or 0)
             period = int(act.get("period", 1) or 1)
             clock_str = act.get("clock", "PT12M00.00S") or "PT12M00.00S"
@@ -242,6 +253,21 @@ class NBALivePlayByPlayParser:
                     assister_id = int(act["assistPersonId"])
                     pair = (assister_id, pid)
                     assist_pairs[pair] = assist_pairs.get(pair, 0) + 1
+                if act.get("shotResult") != "Made" and team_id:
+                    miss_by_team[team_id] = miss_by_team.get(team_id, 0) + 1
+            elif act_type_l in ("freethrow", "freethrows") and pid:
+                live_fta[pid] = live_fta.get(pid, 0) + 1
+            elif act_type_l == "turnover" and pid:
+                live_tov[pid] = live_tov.get(pid, 0) + 1
+            elif act_type_l == "rebound" and pid:
+                if "offensive" in sub_type_l:
+                    live_orb[pid] = live_orb.get(pid, 0) + 1
+                elif "defensive" in sub_type_l:
+                    live_drb[pid] = live_drb.get(pid, 0) + 1
+
+        teams = set(miss_by_team)
+        live_orb_opportunities = dict(miss_by_team)
+        live_drb_opportunities = {t: sum(v for ot, v in miss_by_team.items() if ot != t) for t in teams}
 
         # Current stint, v2026.28: (a) opening starters never have a 'sub in' event, so a player on the floor with no
         # substitution yet has been on since tip; (b) halftime (and an OT break) resets fatigue, so a stint never starts
@@ -262,6 +288,12 @@ class NBALivePlayByPlayParser:
             live_rim_fga=live_rim_fga,
             live_mid_fga=live_mid_fga,
             live_3pt_fga=live_3pt_fga,
+            live_fta=live_fta,
+            live_tov=live_tov,
+            live_orb=live_orb,
+            live_drb=live_drb,
+            live_orb_opportunities=live_orb_opportunities,
+            live_drb_opportunities=live_drb_opportunities,
             current_stint_minutes=current_stint_minutes,
             completed_stints=completed,
             last_action_type=last_type,
@@ -588,6 +620,10 @@ ASSIST_ALPHA = 12.0          # assister routing: prior worth 12 assists spread o
 PACE_TAU0 = 180.0            # pace: prior worth 180 team possessions. From sampling noise: a quarter (~25 possessions)
                              # gives a pace s.d. ~8/48 vs a pregame pace error ~3, i.e. weight ~12% (old clock rule: 8.75%)
 MINUTES_EVIDENCE_K = 10.0    # rotation evidence: weight = expected minutes so far / (that + 10); replaces elapsed/48
+FTA_ALPHA = 20.0              # prior possessions for FTA opportunity-rate updating
+TOV_ALPHA = 20.0              # prior possessions for turnover opportunity-rate updating
+ORB_ALPHA = 20.0              # prior rebound opportunities for ORB capture-share updating
+DRB_ALPHA = 20.0              # prior rebound opportunities for DRB capture-share updating
 # Hand-coded role multipliers, v2026.28: shrunk to 1.0 (no effect) until they earn weight out of sample. v2026.27 used
 # 1.12 (heliocentric creator in clutch) and 1.16 (secondary scorer with no creator on the floor): judgment calls that
 # act on the whole remaining game, i.e. hardest in Q1-Q2.
@@ -674,14 +710,40 @@ class InPlayMarkovEngine:
         m_3 = float(np.clip(c.get("3PM", m_pts), *CALIB_TRUST))
         m_reb = float(np.clip(c.get("REB", 1.0), *CALIB_TRUST))
         m_ast = float(np.clip(c.get("AST", 1.0), *CALIB_TRUST))
+        fta = max(0.0, p.p_fta_100 * m_pts)
+        tov = max(0.0, p.p_tov_100)
+        orb = max(0.0, p.p_orb_100 * m_reb)
+        drb = max(0.0, p.p_drb_100 * m_reb)
+        pbp = self.state.pbp_context
+        box = self.state.live_box.get(p.player_id, {})
+        team_poss = float(box.get("_team_actions", 0.0) or 0.0)
+        if team_poss > 0:
+            obs_fta = float(pbp.live_fta.get(p.player_id, box.get("FTA", 0)) or 0.0) * 100.0 / team_poss
+            obs_tov = float(pbp.live_tov.get(p.player_id, box.get("TOV", 0)) or 0.0) * 100.0 / team_poss
+            fta = (FTA_ALPHA * fta + team_poss * obs_fta) / (FTA_ALPHA + team_poss)
+            tov = (TOV_ALPHA * tov + team_poss * obs_tov) / (TOV_ALPHA + team_poss)
+        team_roster = self.home_roster if p.team_id == self.state.home_team_id else self.away_roster
+        orb_total = sum(max(0.2, q.p_orb_100 * float(np.clip(self.calib.get(q.player_id, {}).get("REB", 1.0), *CALIB_TRUST))) for q in team_roster)
+        drb_total = sum(max(0.8, q.p_drb_100 * float(np.clip(self.calib.get(q.player_id, {}).get("REB", 1.0), *CALIB_TRUST))) for q in team_roster)
+        oo = float(pbp.live_orb_opportunities.get(p.team_id, 0) or 0.0)
+        do = float(pbp.live_drb_opportunities.get(p.team_id, 0) or 0.0)
+        if oo > 0 and orb_total > 0:
+            prior_share = orb / orb_total
+            post_share = (ORB_ALPHA * prior_share + float(pbp.live_orb.get(p.player_id, box.get("ORB", 0)) or 0.0)) / (ORB_ALPHA + oo)
+            orb = max(0.0, post_share * orb_total)
+        if do > 0 and drb_total > 0:
+            prior_share = drb / drb_total
+            post_share = (DRB_ALPHA * prior_share + float(pbp.live_drb.get(p.player_id, 0) or 0.0)) / (DRB_ALPHA + do)
+            drb = max(0.0, post_share * drb_total)
         return replace(
             p,
             p_fga_rim_100=max(0.0, p.p_fga_rim_100 * m_pts),
             p_fga_mid_100=max(0.0, p.p_fga_mid_100 * m_pts),
             p_fg3a_100=max(0.0, p.p_fg3a_100 * m_3),
-            p_fta_100=max(0.0, p.p_fta_100 * m_pts),
-            p_orb_100=max(0.0, p.p_orb_100 * m_reb),
-            p_drb_100=max(0.0, p.p_drb_100 * m_reb),
+            p_fta_100=fta,
+            p_tov_100=tov,
+            p_orb_100=orb,
+            p_drb_100=drb,
             p_ast_100=max(0.0, p.p_ast_100 * m_ast),
         )
 
