@@ -3244,6 +3244,22 @@ def main():
                     for _o in orders:
                         _o["requested_qty"] = int(_o["contracts"])
                         _o["size_bucket"] = size_bucket(_o["contracts"])
+                        _ttl_act = float(_o.get("ttl", 8.0))
+                        _praw = _o.get("pi_b")
+                        try:
+                            _pdist = json.loads(_praw) if isinstance(_praw, str) else (dict(_praw) if isinstance(_praw, dict) else {})
+                        except Exception:
+                            _pdist = {}
+                        if _pdist:
+                            _o["pi_b_action"] = json.dumps({
+                                action_key(int(px), _o["requested_qty"], _ttl_act): float(pr)
+                                for px, pr in _pdist.items()
+                            })
+                        else:
+                            _o["pi_b_action"] = json.dumps({
+                                action_key(int(_o["price_cents"]), _o["requested_qty"], _ttl_act):
+                                    float(_o.get("action_prob", _o.get("propensity", 1.0)))
+                            })
                 # The $ minimum exists to avoid paying a rounded-up fee on dust; it only applies where a fee is charged.
                 orders = [o for o in orders if o["fee_cents"] <= 0
                           or o["contracts"] * (o["price_cents"] + o["fee_cents"]) / 100.0 >= args.min_order]
