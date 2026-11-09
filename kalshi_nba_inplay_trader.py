@@ -65,6 +65,8 @@ from kalshi_portfolio_qp import CorrelatedKellyQP, kalshi_fee_cents
 import kalshi_exec_model as XM
 from kalshi_exec_model import EXEC_FEATURES, exec_features, quote_ev_c
 from kalshi_results import phase_of_period, gap_bin_of_value
+from execution_size_authority import size_bucket, highest_authorized_qty, load_authority
+from execution_hazard import action_key
 
 try:
     from kalshi_auth import load_private_key, get_auth_headers
@@ -118,10 +120,10 @@ if not os.path.exists(KALSHI_PEM_PATH):
 
 QUOTE_MAX_AGE = 75   # seconds a resting quote may live before it is refreshed (overridden by --quote-ttl at startup)
 PENDING_CHECKS = 4   # cycles a cancelled order stays watched for late fills (~1 min)
-TRADER_VERSION = "v2026.38"
+TRADER_VERSION = "v2026.39"
 RUN_ID = datetime.now().strftime("%Y%m%d_%H%M%S")           # joins every log row to its run_config_<RUN_ID>.json
 POLICY = {"policy_id": "unset", "policy_family_id": "unset", "exec_model_id": "none", "exec_prior_id": "none"}   # set in main
-QUOTE_POLICY = "qp6"   # v2026.37: base quote bid+1 (join when toxic / NO), or argmax LCB[P(fill) x (alpha + execution
+QUOTE_POLICY = "qp7"   # v2026.37: base quote bid+1 (join when toxic / NO), or argmax LCB[P(fill) x (alpha + execution
                        # residual - fee)] over the maker ladder once a CHAMPION execution model is promoted; the quote is
                        # re-optimized on the final fresh book; exploration +/-1c arms (own predictions, logged propensity)
                        # decay with execution-model uncertainty; fill-aware QP; WS market-clock fast cancels
@@ -166,6 +168,7 @@ CHALLENGER_JSON = os.path.join(CURRENT_DIR, "challenger_exec_model.json")    # s
 FUNNEL_CSV = os.path.join(CURRENT_DIR, f"kalshi_funnel_{TODAY_STR}.csv")
 PROD_PROFILE_JSON = os.path.join(CURRENT_DIR, "production_profile.json")   # written by grade_predictions.py from LIVE maker orders
 STATUS_JSON = os.path.join(CURRENT_DIR, "model_status.json")
+SIZE_AUTH_JSON = os.path.join(CURRENT_DIR, "exec_size_authority.json")
 
 
 def production_profile(args, cal_id: str, min_period: int, side_on: dict) -> dict:
@@ -1160,7 +1163,7 @@ def position_mismatches(local: Dict[Tuple[str, str], dict], exch: Dict[str, floa
 
 
 QUOTE_KEYS = ("pi_b", "greedy_px", "action_price", "action_prob", "tier", "confidence", "cell", "authority_weight", "gap_bin", "phase", "fee_c", "aggr", "stop", "ttl",
-              "queue_ahead", "t_since_action_s", "alpha_c", "em_c", "em_model_c", "em_prior_c", "qev_c", "qev_sd_c",
+              "queue_ahead", "requested_qty", "size_bucket", "qty_over_best_depth", "qty_over_queue_ahead", "log_order_qty", "pi_b_action", "t_since_action_s", "alpha_c", "em_c", "em_model_c", "em_prior_c", "qev_c", "qev_sd_c",
               "fill_prob", "cond_edge_c", "challenger_pf", "challenger_qev", "is_probe", "side_bid", "side_ask",
               "mid_vel_250ms", "mid_vel_1s", "spread_vel", "imb_vel", "bid_depletion", "ask_replenish", "has_ws", "team_id")
 
@@ -2126,6 +2129,7 @@ def main():
     POLICY["exec_prior_id"] = file_hash(EXEC_PRIORS_JSON) if (prior_src.startswith("exec_priors") or prior_src.startswith(QUOTE_POLICY)) else \
         hashlib.sha256(json.dumps(exec_prior, sort_keys=True).encode()).hexdigest()[:12]
     POLICY["policy_id"], POLICY["policy_family_id"], policy_fields = policy_identity(args, POLICY["exec_model_id"], POLICY["exec_prior_id"])
+    size_authority = load_authority(SIZE_AUTH_JSON, POLICY["policy_family_id"])
     shock_sds = dict(model=args.model_risk_sd, stat=args.stat_risk_sd, game=args.game_risk_sd, team=args.team_risk_sd,
                      player=args.player_risk_sd)
     print("=" * 92)
@@ -3163,6 +3167,50 @@ def main():
                     orders = qp.solve_allocations(refreshed, bankroll=args.bankroll, max_bet_usd=args.max_bet,
                                                   positions=risk_view, held=held, group_caps=pilot_groups(refreshed)) if refreshed else []
                 funnel.add("fresh_book_survivors", len(orders))
+                # qp7 quantity-aware second-stage economics: the first QP solve proposes quantity; now quantity enters
+                # the execution feature vector, expected fill FRACTION is re-scored, size authority is applied, and the
+                # optimizer is solved again. Hard caps and CVaR below still use full requested notional.
+                if orders:
+                    _qrescored = []
+                    for _o in orders:
+                        _req = max(1, int(_o.get("contracts", 1)))
+                        _allow = highest_authorized_qty(_req, size_authority, production=run_is_production)
+                        if _allow < 1:
+                            funnel.block("size bucket not authorized")
+                            continue
+                        _c = {k: v for k, v in _o.items() if k not in ("contracts", "risk_usd", "ev_usd", "ev_if_filled_usd", "joint_kelly_fraction")}
+                        _c["requested_qty"] = int(_allow)
+                        _c["size_bucket"] = size_bucket(_allow)
+                        _c["max_contracts"] = min(_allow, int(_c["max_contracts"])) if _c.get("max_contracts") else _allow
+                        _ctx = _c.get("ctx") or {}
+                        if exec_model:
+                            _sbid = int(_c.get("side_bid", _c.get("price_cents", 0)))
+                            _sask = int(_c.get("side_ask", max(_sbid + 1, _c.get("price_cents", 0) + 1)))
+                            _qa = float(_ctx.get("qty_side_bid", 0.0) if int(_c["price_cents"]) == _sbid else 0.0)
+                            _xq = exec_features(_c["side"], _c["stat"], _c.get("period", 0), _sbid, _sask, int(_c["price_cents"]),
+                                                float(_c.get("alpha_c", 0.0)), ttl_s=float(_c.get("ttl", 8.0)),
+                                                stop=str(_c.get("stop", "other")), phase=_c.get("phase"),
+                                                qty_bid=float(_ctx.get("qty_side_bid", 0.0)), qty_ask=float(_ctx.get("qty_side_ask", 0.0)),
+                                                queue_ahead=_qa, t_since_action_s=float(_c.get("t_since_action_s", 0.0)),
+                                                micro=_ctx.get("micro") or {}, order_qty=_allow,
+                                                best_depth=float(_ctx.get("qty_side_bid", 0.0)))
+                            _qv = XM.quote_value(exec_model, _xq, float(_c.get("alpha_c", 0.0)), float(_c.get("fee_cents", 0.0)))
+                            _c["fill_prob"] = float(_qv["pf"])
+                            _c["effective_fill_fraction"] = float(_qv.get("fill_fraction", _qv["pf"]))
+                        else:
+                            _c["effective_fill_fraction"] = float(_c.get("fill_prob", 1.0))
+                        _depth = max(float(_ctx.get("qty_side_bid", 0.0)), 1.0)
+                        _queue = max(float(_ctx.get("qty_side_bid", 0.0) if int(_c["price_cents"]) == int(_c.get("side_bid", _c["price_cents"])) else 0.0), 1.0)
+                        _c["qty_over_best_depth"] = _allow / _depth
+                        _c["qty_over_queue_ahead"] = _allow / _queue
+                        _c["log_order_qty"] = math.log1p(_allow)
+                        _c["pi_b_action"] = json.dumps({action_key(int(_c["price_cents"]), _allow, float(_c.get("ttl", 8.0))): float(_c.get("action_prob", _c.get("propensity", 1.0)))})
+                        _qrescored.append(_c)
+                    orders = qp.solve_allocations(_qrescored, bankroll=args.bankroll, max_bet_usd=args.max_bet,
+                                                  positions=risk_view, held=held, group_caps=pilot_groups(_qrescored)) if _qrescored else []
+                    for _o in orders:
+                        _o["requested_qty"] = int(_o["contracts"])
+                        _o["size_bucket"] = size_bucket(_o["contracts"])
                 # The $ minimum exists to avoid paying a rounded-up fee on dust; it only applies where a fee is charged.
                 orders = [o for o in orders if o["fee_cents"] <= 0
                           or o["contracts"] * (o["price_cents"] + o["fee_cents"]) / 100.0 >= args.min_order]
