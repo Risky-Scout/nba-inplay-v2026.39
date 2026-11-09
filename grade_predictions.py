@@ -25,9 +25,10 @@ import numpy as np
 import pandas as pd
 from kalshi_results import load_predictions, settlements
 from nba_markov_engine import ENGINE_VERSION
+from execution_size_authority import write_authority, size_bucket
 
 GATE_MARKETS, GATE_EDGE_C, GATE_GAMES = 300, 2.0, 15
-QUOTE_POLICY = "qp6"   # must match kalshi_nba_inplay_trader.QUOTE_POLICY: priors learned under another policy are not reused
+QUOTE_POLICY = "qp7"   # must match kalshi_nba_inplay_trader.QUOTE_POLICY: priors learned under another policy are not reused
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -606,6 +607,55 @@ def funnel_report():
         print(f"   {k:<26}{int(tot[k]):>10}  {100.0 * tot[k] / base:7.2f}%")
 
 
+def size_authority_report(pol: dict) -> dict:
+    """Build qp7 size authority from LIVE base-arm terminal quote episodes for the current policy family."""
+    import glob
+    here = os.path.dirname(os.path.abspath(__file__))
+    qf = [f for f in sorted(glob.glob(os.path.join(here, "kalshi_quotes_*.csv"))) if os.path.getsize(f) > 0]
+    ef = [f for f in sorted(glob.glob(os.path.join(here, "kalshi_quote_events_*.csv"))) if os.path.getsize(f) > 0]
+    mf = [f for f in sorted(glob.glob(os.path.join(here, "kalshi_markouts_*.csv"))) if os.path.getsize(f) > 0]
+    if not qf or not ef or not pol.get("policy_family_id"):
+        a = write_authority(pd.DataFrame(), pol.get("policy_family_id"), os.path.join(here, "exec_size_authority.json"))
+        print("\n15b) SIZE AUTHORITY: no qualifying qp7 terminal evidence yet")
+        return a
+    q = pd.concat([pd.read_csv(f) for f in qf], ignore_index=True)
+    e = pd.concat([pd.read_csv(f) for f in ef], ignore_index=True)
+    q = q[(q.get("quote_policy", "").astype(str) == QUOTE_POLICY) &
+          (q.get("policy_family_id", "").astype(str) == str(pol.get("policy_family_id"))) &
+          (q.get("arm", "base").fillna("base").astype(str) == "base")].copy()
+    if "mode" in q:
+        q = q[q["mode"].astype(str).str.upper() == "LIVE"]
+    if q.empty:
+        a = write_authority(pd.DataFrame(), pol.get("policy_family_id"), os.path.join(here, "exec_size_authority.json"))
+        print("\n15b) SIZE AUTHORITY: no LIVE qp7 base-arm quotes for this family")
+        return a
+    q["requested_qty"] = pd.to_numeric(q["requested_qty"] if "requested_qty" in q else q.get("count", 1), errors="coerce").fillna(1).clip(lower=1)
+    q["size_bucket"] = q["requested_qty"].map(size_bucket)
+    e["order_id"] = e["order_id"].astype(str)
+    term = set(e.loc[e["event"].astype(str) == "terminal", "order_id"])
+    fills = e[e["event"].astype(str) == "fill"].copy()
+    if len(fills):
+        fq = pd.to_numeric(fills["contracts"] if "contracts" in fills else fills.get("filled", 1), errors="coerce").fillna(0)
+        fsum = fills.assign(_fq=fq).groupby("order_id")["_fq"].sum()
+    else:
+        fsum = pd.Series(dtype=float)
+    q["order_id"] = q["order_id"].astype(str)
+    q["terminal"] = q["order_id"].isin(term)
+    q["filled_qty_terminal"] = q["order_id"].map(fsum).fillna(0.0)
+    if "game" not in q:
+        q["game"] = q["ticker"].astype(str).str.split("-").str[1]
+    if mf:
+        m = pd.concat([pd.read_csv(f) for f in mf], ignore_index=True)
+        if "order_id" in m and "m30" in m:
+            mm = m.assign(order_id=m["order_id"].astype(str), _m30=pd.to_numeric(m["m30"], errors="coerce")).groupby("order_id")["_m30"].mean()
+            q["m30"] = q["order_id"].map(mm)
+    a = write_authority(q, pol.get("policy_family_id"), os.path.join(here, "exec_size_authority.json"))
+    print("\n15b) SIZE AUTHORITY (qp7, current policy family)")
+    for b, v in a["buckets"].items():
+        print(f"   {b:<9} {v.get('status','RESEARCH'):<10} terminal {v.get('terminal_orders',0):>4} | fills {v.get('fills',0):>3} | games {v.get('games',0):>3} | residual LB {v.get('residual_lcb_c')}")
+    return a
+
+
 def main():
     df = load_predictions(sys.argv[1:] or None)
     res = settlements(df["ticker"].unique())
@@ -672,6 +722,7 @@ def main():
     tier_report(res)
     funnel_report()
     pol = current_policy()
+    size_auth = size_authority_report(pol)
     auth = production_authorization(sanity, fills, mgate, pol)
     passed = auth["passed"]
     # diagnostic only (v2026.38): "the whole model beats Kalshi everywhere" no longer authorizes anything
@@ -680,7 +731,7 @@ def main():
                      rule=f"diagnostic: global edge 90% CI low > 0 and mean >= {GATE_EDGE_C}c (NOT an authorization gate)")
     print(f"   GLOBAL MODEL DOMINANCE (diagnostic, not a gate): {'yes' if dominance['passed'] else 'no'}")
     status = dict(gate, passed=passed, authorization=auth, engine_sanity=sanity, global_model_dominance=dominance, strategy=strat,
-                  fills=fills, markout_gate=mgate, spread_giveback=giveback,
+                  fills=fills, markout_gate=mgate, size_authority=size_auth, spread_giveback=giveback,
                   quote_policy=QUOTE_POLICY, policy=pol, engine=ENGINE_VERSION, generated=datetime.now().isoformat(timespec="seconds"),
                   rule=AUTH_RULE)
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_status.json"), "w") as f:
