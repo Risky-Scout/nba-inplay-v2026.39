@@ -1173,6 +1173,8 @@ def quote_log(oid: str, bet: dict, m: "KalshiMarket", count: int):
     """Every posted order with the book around it; joined later to its terminal event (order_id) to fit
     P(fill before TTL | quote, state) and the execution residual. v2026.37: every execution feature, the authority tier,
     and the policy identity are logged so a model is trained on exactly what it will be scored with."""
+    bet.setdefault("requested_qty", int(count))
+    bet.setdefault("size_bucket", size_bucket(count))
     row = {"time": datetime.now().isoformat(timespec="seconds"), "order_id": oid, "ticker": bet["ticker"], "side": bet["side"],
            "price": bet["price_cents"], "count": count, "yes_bid": bet.get("snap_bid", m.yes_bid),
            "yes_ask": bet.get("snap_ask", m.yes_ask), "book_age_ms": None if bet.get("book_ts") is None else round(1000.0 * (time.time() - bet["book_ts"])),
@@ -1200,6 +1202,10 @@ def quote_event(oid: str, bet: dict, event: str, reason: str = "", contracts: fl
            "side": bet.get("side"), "price": bet.get("price_cents"), "event": event, "reason": reason,
            "age_s": round(now - sub, 2), "contracts": contracts, "act_submit": bet.get("act_submit"), "run_id": RUN_ID,
            "state": bet.get("state"), "filled": bet.get("filled", 0.0), "count": bet.get("count"),
+           "requested_qty": bet.get("requested_qty", bet.get("count")), "size_bucket": bet.get("size_bucket"),
+           "queue_ahead_initial": bet.get("queue_ahead_initial"), "queue_ahead_terminal": bet.get("queue_ahead_terminal"),
+           "queue_depletion_rate": bet.get("queue_depletion_rate"), "seconds_at_price": bet.get("seconds_at_price"),
+           "price_level_resets": bet.get("price_level_resets"),
            "policy_id": POLICY["policy_id"], "policy_family_id": POLICY["policy_family_id"], "quote_policy": QUOTE_POLICY}
     try:
         csv_append(QUOTE_EVENTS_CSV, [row])
@@ -1369,12 +1375,23 @@ class OrderBook:
             "p_used": round(float(bet.get("p_used") if bet.get("p_used") is not None else bet["win_prob"]), 4), "ev_pct": round(bet["roi"] * 100.0, 2),
             "joint_kelly_pct": round(bet.get("joint_kelly_fraction", 0.0) * 100.0, 3), "arm": bet.get("arm", "base"),
             "tier": bet.get("tier"), "confidence": bet.get("confidence"), "cell": bet.get("cell"), "team_id": bet.get("team_id"),
-            "fill_prob": bet.get("fill_prob"), "cond_edge_c": bet.get("cond_edge_c")})
+            "fill_prob": bet.get("fill_prob"), "cond_edge_c": bet.get("cond_edge_c"),
+            "requested_qty": bet.get("requested_qty", bet.get("count", abs(contracts))),
+            "size_bucket": bet.get("size_bucket", size_bucket(max(1, int(abs(contracts) or 1))))})
         logger.warning(f"✅ FILL {mode} {bet['player_name']} {bet['stat']} {bet['side'].upper()} {bet['line']} "
                        f"{contracts:g}x @ {price_cents:.0f}¢ (cost ${cost:.2f}) {bet['ticker']} [{bet.get('tier', '?')}]")
 
     # ── state transitions ─────────────────────────────────────────────────────────────────────────────────────────
     def _terminal(self, oid: str, bet: dict, state: str, proof: str):
+        _ws = getattr(self.k, "ws", None)
+        if _ws is not None and hasattr(_ws, "stop_queue_estimate"):
+            _q = _ws.stop_queue_estimate(oid)
+            if _q:
+                bet["queue_ahead_initial"] = _q.get("queue_ahead_initial")
+                bet["queue_ahead_terminal"] = _q.get("queue_ahead_est")
+                bet["queue_depletion_rate"] = _q.get("queue_depletion_rate")
+                bet["seconds_at_price"] = _q.get("seconds_at_price")
+                bet["price_level_resets"] = _q.get("price_level_resets")
         bet["state"] = state
         self.resting.pop(oid, None)
         self.pending.pop(oid, None)
@@ -1809,7 +1826,13 @@ class OrderBook:
         else:
             oid, filled = f"paper-{uuid.uuid4().hex[:10]}", 0.0
         if bet["is_maker"]:
-            b = dict(bet, count=count, submitted=now, filled=0.0, state=RESTING, expiration_ts=int(now) + int(ttl_sec))
+            b = dict(bet, count=count, requested_qty=int(count), size_bucket=size_bucket(count),
+                     submitted=now, filled=0.0, state=RESTING, expiration_ts=int(now) + int(ttl_sec))
+            _ws = getattr(self.k, "ws", None)
+            if _ws is not None and hasattr(_ws, "start_queue_estimate"):
+                _initial = float(bet.get("queue_ahead") or 0.0)
+                _q = _ws.start_queue_estimate(oid, bet["ticker"], bet["side"], int(bet["price_cents"]), initial_depth=_initial)
+                b["queue_ahead_initial"] = _q.get("queue_ahead_initial")
             self.resting[oid] = b
             self.save_journal()
             quote_log(oid, b, market, count)
