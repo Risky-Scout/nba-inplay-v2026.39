@@ -17,7 +17,7 @@ Solve  max  mu'x - (gamma/2) x' Sigma x,  x = existing + new  (fractions of bank
        s.t. session cap on total open risk, per-game cap, per-position cap, new >= 0.
 gamma = 2 -> half Kelly.
 
-v2026.37 fill-aware objective. A resting quote returns F x R_contract with F ~ Bernoulli(phi) (phi = P(fill)):
+v2026.39 quantity-aware fill objective. A resting quote returns F x R_contract with F ~ Bernoulli(phi) (phi = P(fill)):
     mu_i      = confidence_i x phi_i x conditional_edge_i / unit_cost_i
     Var_q(i)  = phi_i Var(R_i | fill) + phi_i (1 - phi_i) mu_c,i^2          (mu_c = conditional return per $)
     Cov_q(ij) = sqrt(phi_i phi_j) Cov(R_i, R_j)                             (conservative until joint fill data exist)
@@ -103,7 +103,7 @@ class CorrelatedKellyQP:
         objective carries the cross term gamma * f' Sigma_NH h (a new bet correlated with what we hold costs more).
         group_caps: extra budgets [{"members": [candidate indices], "room": fraction of bankroll still free}] (v2026.37:
         the PILOT session budget and per-player pilot budgets), enforced in the continuous and the integer stage.
-        Candidate fields: confidence (default 1), fill_prob (default 1), max_contracts (default none)."""
+        Candidate fields: confidence (default 1), effective_fill_fraction (preferred; fallback fill_prob/default 1), max_contracts."""
         self.last_stats = {"positive": 0, "below_one": 0, "rounded_up": 0}
         if not candidates or bankroll <= 0:
             return []
@@ -116,7 +116,7 @@ class CorrelatedKellyQP:
         # immediate-execution value p/c - 1. win_prob still drives the outcome covariance.
         edge_c = np.array([float(c.get("expected_edge_c", 100.0 * c["win_prob"] - unit_c[i])) for i, c in enumerate(candidates)])
         conf = np.array([float(np.clip(c.get("confidence", 1.0) if c.get("confidence") is not None else 1.0, 0.0, 1.0)) for c in candidates])
-        phi = np.array([float(np.clip(c.get("fill_prob", 1.0) if c.get("fill_prob") is not None else 1.0, 1e-4, 1.0)) for c in candidates])
+        phi = np.array([float(np.clip(c.get("effective_fill_fraction", c.get("fill_prob", 1.0)) if c.get("effective_fill_fraction", c.get("fill_prob", 1.0)) is not None else 1.0, 1e-4, 1.0)) for c in candidates])
         mu_c = conf * edge_c / np.maximum(unit_c, 1e-9)        # conditional on a fill, confidence-discounted
         mu = phi * mu_c                                        # expected return of the QUOTE
         fs = dict(model_sd=self.model_sd, stat_sd=self.stat_sd, game_sd=self.game_sd, team_sd=self.team_sd,
