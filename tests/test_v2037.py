@@ -247,7 +247,7 @@ p5, f5, _ = T.policy_identity(a1, "m1", "p2")
 a2b = argparse.Namespace(kelly=0.10, lcb_z=1.645, once=False, interval=15, live=False, pilot_live=True)
 p2b, f2b, _ = T.policy_identity(a2b, "m1", "p1")
 check("any economic parameter changes the policy id AND family (lcb_z 1.282 -> 1.645)", p1 != p2b and f1 != f2b)
-check("v2026.38: a sizing parameter (kelly 0.10 -> 0.11) changes policy_id but not the family", p1 != p2 and f1 == f2)
+check("v2026.39: a sizing parameter (kelly 0.10 -> 0.11) changes policy_id but not the family", p1 != p2 and f1 == f2)
 check("operational settings (--once, --interval, --live) do not", p1 == p3 and f1 == f3)
 check("a different execution model is a different policy and family", p1 != p4 and f1 != f4)
 check("a re-estimated execution prior changes policy_id but not the family", p1 != p5 and f1 == f5)
@@ -257,7 +257,7 @@ rows, res = [], {}
 for i in range(150):
     t = f"KXNBAPTS-26NOV{(i % 12) + 1:02d}AAABBB-{i}"
     res[t] = "yes" if i % 3 else "no"
-    for pol, fam, arm in (("qp5", "FAM", "base"), ("qp6", "OTHER", "base"), ("qp6", "FAM", "plus")):
+    for pol, fam, arm in (("qp5", "FAM", "base"), ("qp7", "OTHER", "base"), ("qp7", "FAM", "plus")):
         rows.append(dict(timestamp="x", mode="LIVE", order_id=f"{pol}{fam}{arm}{i}", fill_id=f"f{pol}{fam}{arm}{i}", ticker=t, game="G",
                          player="P", stat="PTS", line=19.5, side="yes", order_type="MAKER", price_cents=50, fee_usd=0.0,
                          contracts=3, cost_usd=1.5, p_model=0.6, p_mkt=0.5, p_used=0.53, ev_pct=6, joint_kelly_pct=0.5,
@@ -376,7 +376,7 @@ def synth_quotes(n=900, seed=4, dates=("20261101", "20261102", "20261103", "2026
                          p_used=pu, p_mkt=pm, fee_c=0.0, propensity=1.0, run_id=dates[i % len(dates)] + "_190000",
                          label=float(filled), m30_all=m30 if filled else np.nan,
                          m30_ef=(m30 + 1.5) if (filled and i % 2) else np.nan, q_m30=np.nan if filled else drift,
-                         quote_policy="qp6", arm="base"))
+                         quote_policy="qp7", arm="base"))
     q = pd.DataFrame(rows)
     q["date"] = q["run_id"].str[:8]
     q["game"] = q["ticker"].str.split("-").str[1]
@@ -702,7 +702,7 @@ check("every PILOT quote is one contract, maker, YES", len(q_[q_["tier"] == "PIL
 check("PRODUCTION quotes are sized by Kelly (some > 1 contract)", (q_.loc[q_["tier"] == "PRODUCTION", "count"] > 1).any())
 check("PILOT notional within the pilot session budget", (q_.loc[q_["tier"] == "PILOT", "count"] * q_.loc[q_["tier"] == "PILOT", "price"] / 100.0).sum() <= 0.01 * 1000 + 1e-9)
 cfg = json.load(open(sorted(glob.glob(os.path.join(TMP, "run_config_*.json")))[-1]))
-check("run config archives trader v2026.38, qp6, policy ids, authority cells", cfg["trader"] == "v2026.38" and cfg["quote_policy"] == "qp6"
+check("run config archives trader v2026.39, qp6, policy ids, authority cells", cfg["trader"] == "v2026.39" and cfg["quote_policy"] == "qp7"
       and cfg["policy_id"] and cfg["policy_family_id"] and cfg["authority_production"] == ["PTS|Q3"] and cfg["min_period_used"] == 1)
 pl = pd.read_csv(T.PRED_LOG)
 check("prediction log records the authority tier and cell per market", {"authority_tier", "authority_cell", "gap_bin"} <= set(pl.columns))
@@ -740,7 +740,7 @@ _share = [p for p in _pil_pl if (qq2["player_id"] == p).sum() > 1]
 _pi_ok = len(qq2) > 0 and "pi_b" in qq2.columns and all(
     abs(sum(json.loads(p_).values()) - 1.0) < 1e-3 and abs(json.loads(p_).get(str(int(px_)), -1) - ap_) < 1e-3
     for p_, px_, ap_ in zip(qq2["pi_b"], qq2["price"], qq2["action_prob"]))
-check("v2026.38: every posted quote logs pi_b over its ladder (sums to 1) and the action's own probability", _pi_ok,
+check("v2026.39: every posted quote logs pi_b over its ladder (sums to 1) and the action's own probability", _pi_ok,
       str(qq2[["price", "action_prob", "pi_b"]].head(2).to_dict("records")) if len(qq2) and "pi_b" in qq2.columns else "no pi_b column")
 check("R2b. a PILOT quote never shares a player with another quote (pilots yield to production, one pilot per player)",
       len(qq2) > 0 and (qq2["tier"] == "PILOT").any() and not _share, f"pilot players {len(_pil_pl)}, sharing {_share[:3]}")
@@ -804,7 +804,7 @@ check("manual --model-weight in paper: candidates are RESEARCH tier (paper evide
 cleanup_logs()
 write_cal({"*": dict(weight=0.0, tier="RESEARCH", research_reason="failed_evidence"),
            "PTS|Q3": dict(weight=0.35, tier="PRODUCTION", confidence=1.0, research_reason="")})
-cm = dict(FE._model_dict(mfit), quote_policy="qp6", validated=True, n_fills=1000, explore_scale=0.1)
+cm = dict(FE._model_dict(mfit), quote_policy="qp7", validated=True, n_fills=1000, explore_scale=0.1)
 cm["mark_all"] = [0.0] * len(XM.EXEC_FEATURES)
 cm["mark_all"][0] = 1.5                                  # +1.5c residual at every quote
 cm["exec_model_id"] = XM.model_id(cm)
