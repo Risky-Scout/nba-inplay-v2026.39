@@ -1,6 +1,6 @@
 # NBA In-Play Player-Prop Pricing & Execution System
 
-**Author:** Joey Shackelford, ASA, MAAA  ·  v2026.38 (engine 2026.28, quote policy qp6)
+**Author:** Joey Shackelford, ASA, MAAA  ·  v2026.39 (engine 2026.29, quote policy qp7)
 
 This system prices NBA player props while the game is live (PTS, REB, AST, 3PM, PRA). It uses a possession-level absorbing Markov chain built on Dunks & Threes (D&T) player-skill estimates, and trades mispriced Kalshi contracts. Bets are sized with correlated fractional Kelly (0.10 during the pilot), and orders rest on the book only (maker-only) to keep fees down. Current settings are always archived per run in `run_config_*.json`. Sections 5c–5t describe how the system evolved; where an older section disagrees with them, the later section and the run config are authoritative.
 
@@ -38,6 +38,15 @@ Expected final lines are `ENGINE CHECKS PASSED`, `SIZING CHECKS PASSED`, `END-TO
 | `grade_predictions.py` | Grades every logged prediction against settlement and writes the live gate, `model_status.json` |
 | `kalshi_results.py` | Settlement lookups (cached in `settlements.csv`) and prediction-log loading |
 | `evaluate_night.py` | Post-game scoring: Brier and log loss for model vs market, calibration buckets, per-stat bias, P&L, CLV |
+
+## v2026.39 / engine 2026.29 / qp7
+
+This release makes execution quantity-aware and moves D&T calibration into generative event intensities. Requested quantity, quantity/depth, quantity/queue and log quantity are execution features; terminal partial fills produce a bounded fill fraction; the portfolio objective uses expected filled fraction while hard caps and CVaR remain full-notional. Production size is separately authorized in QTY1 / QTY2_3 / QTY4_6 / QTY7PLUS buckets.
+
+Engine 2026.29 preserves the Markov architecture, adds substitution/return hazard interfaces and score-dependent pathwise rotations, and calibrates rim/mid/3PA/FTA, rebound capture and assist routing before simulation instead of thickening counts after simulation. The legacy post-calibration path is disabled by default.
+
+**Governance:** code readiness is not economic readiness. qp7 execution authority must be earned from LIVE qp7 evidence for the current policy family, and engine 2026.29 predictive authority is reset and must be re-earned on later unseen games. The system may place zero trades when no positive expected value is authorized.
+
 
 ## 1. Probability model
 
