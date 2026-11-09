@@ -1,4 +1,5 @@
 import numpy as np
+from rotation_hazard import RotationHazardModel
 
 
 class NBAStintEngine:
@@ -16,6 +17,7 @@ class NBAStintEngine:
         "deep_reserve": {"max_minutes": 10.0},
     }
     FOUL_OUT = 6
+    HAZARD_MODEL = RotationHazardModel()
 
     @staticmethod
     def elapsed_minutes(period: int, current_sec_rem: float) -> float:
@@ -24,6 +26,18 @@ class NBAStintEngine:
         if period is None or period <= 4:
             return max(0.0, 48.0 - T)
         return 48.0 + 5.0 * max(0, period - 5) + max(0.0, 5.0 - T)
+
+    @classmethod
+    def substitution_probabilities(cls, **kwargs):
+        """P(sub out within 15/30/60s), hierarchically shrunk in RotationHazardModel."""
+        p = cls.HAZARD_MODEL.sub_hazard_1s(**kwargs)
+        return {15: cls.HAZARD_MODEL.within(p, 15), 30: cls.HAZARD_MODEL.within(p, 30), 60: cls.HAZARD_MODEL.within(p, 60)}
+
+    @classmethod
+    def return_probabilities(cls, **kwargs):
+        """P(return within 60/120/180s)."""
+        p = cls.HAZARD_MODEL.return_hazard_1s(**kwargs)
+        return {60: cls.HAZARD_MODEL.within(p, 60), 120: cls.HAZARD_MODEL.within(p, 120), 180: cls.HAZARD_MODEL.within(p, 180)}
 
     @classmethod
     def get_remaining_minute_cap(
