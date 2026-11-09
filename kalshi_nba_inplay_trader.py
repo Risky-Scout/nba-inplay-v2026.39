@@ -1000,7 +1000,8 @@ class KalshiClient:
                 params = {"limit": 1000, "count_filter": "position"}
                 if cursor:
                     params["cursor"] = cursor
-                r = self._session.get(f"{self.BASE}{path}", headers=self._auth("GET", path), params=params, timeout=8)                if r.status_code != 200:
+                r = self._session.get(f"{self.BASE}{path}", headers=self._auth("GET", path), params=params, timeout=8)
+                if r.status_code != 200:
                     logger.error(f"[POSITIONS {r.status_code}] {r.text[:200]}")
                     return None
                 d = r.json()
