@@ -1,6 +1,8 @@
 name: v2026.39 CI
 on:
   push:
+    branches: [main, fanatics-portfolio]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 jobs:
