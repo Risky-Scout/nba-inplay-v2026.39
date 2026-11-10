@@ -48,7 +48,7 @@ def clean():
         os.remove(f)
 
 
-check("versions: trader v2026.39, quote policy qp6, engine unchanged (2026.28)",
+check("versions: trader v2026.39, quote policy qp7, engine 2026.29",
       T.TRADER_VERSION == "v2026.39" and T.QUOTE_POLICY == "qp7" and FE.QUOTE_POLICY == "qp7" and GP.QUOTE_POLICY == "qp7"
       and mg.ENGINE_VERSION == "2026.29")
 
