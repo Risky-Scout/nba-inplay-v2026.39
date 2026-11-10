@@ -67,6 +67,7 @@ from kalshi_exec_model import EXEC_FEATURES, exec_features, quote_ev_c
 from kalshi_results import phase_of_period, gap_bin_of_value
 from execution_size_authority import size_bucket, highest_authorized_qty, load_authority
 from execution_hazard import action_key
+from review_dt_adapter import ReviewDunksAndThreesClient
 
 try:
     from kalshi_auth import load_private_key, get_auth_headers
@@ -2005,6 +2006,9 @@ def main():
     ap.add_argument("--allow-live-ball", action="store_true",
                     help="Allow NEW orders while the ball is live (default: dead balls only, until residual possessions are modelled)")
     ap.add_argument("--pregame", action="store_true", help="Also trade scheduled (not started) games")
+    ap.add_argument("--review-dt-snapshot", default=None,
+                    help="HIRING-MANAGER LIVE REVIEW: use a current read-only D&T snapshot instead of a D&T credential. "
+                         "PAPER only; real-money flags are refused.")
     ap.add_argument("--min-minutes", type=float, default=20.0, help="Trade players projected for at least this many minutes")
     ap.add_argument("--once", action="store_true", help="Run a single cycle and exit (dry-run preview)")
     ap.add_argument("--live", action="store_true", help="Submit real-money orders (default: paper)")
@@ -2044,6 +2048,9 @@ def main():
     global QUOTE_MAX_AGE
     QUOTE_MAX_AGE = max(5, args.quote_ttl - 3)
     mw_manual = "--model-weight" in sys.argv
+    review_mode = bool(args.review_dt_snapshot)
+    if review_mode and (args.live or args.pilot_live):
+        sys.exit("--review-dt-snapshot is PAPER-only and cannot be combined with --live or --pilot-live.")
     if args.pilot_live:
         # PILOT LIVE: real money to collect execution evidence for an unvalidated configuration, at the smallest size that
         # still produces it. Never production; every limit below is forced, whatever else was passed.
@@ -2085,7 +2092,7 @@ def main():
     print(f" Ledger:   {LEDGER_CSV}")
     print("=" * 92)
 
-    if not DT_API_KEY:
+    if not DT_API_KEY and not review_mode:
         logger.error("DT_API_KEY missing from Keychain or environment.")
         sys.exit(1)
 
@@ -2317,7 +2324,17 @@ def main():
         logger.info(f"Fee-minimising policy: fee-free maker series = {sorted(kalshi.fee_free_series()) or 'none'}; "
                     f"others trade with the maker fee priced into EV.")
 
-    dt_client = mg.DunksAndThreesClient(DT_API_KEY)
+    if review_mode:
+        try:
+            dt_client = ReviewDunksAndThreesClient(args.review_dt_snapshot)
+            _rm = dt_client.metadata
+            logger.info("LIVE REVIEW D&T snapshot: date=%s generated=%s engine=%s source=%s",
+                        _rm.get("date"), _rm.get("generated_at"), _rm.get("engine"), _rm.get("source"))
+        except Exception as e:
+            logger.error(f"LIVE REVIEW snapshot unavailable or invalid: {e}")
+            sys.exit(1)
+    else:
+        dt_client = mg.DunksAndThreesClient(DT_API_KEY)
     base_kelly_live = min(max(0.0, float(args.kelly)), 0.10) if args.live else max(0.0, float(args.kelly))
     prediction_health = 1.0 if run_is_production else (0.75 if args.pilot_live else 1.0)
     execution_health = 1.0 if exec_model else (0.65 if args.pilot_live else 1.0)
@@ -2342,7 +2359,7 @@ def main():
                    cell_weights=cell_w, pool_weight_sd=w_sd, min_period_used=min_period, run_id=RUN_ID, quote_policy=QUOTE_POLICY,
                    edge_rule=EDGE_RULE, cvar_limit=args.cvar_limit, no_enabled=side_on["no"], yes_enabled=side_on["yes"],
                    exec_priors=exec_prior, exec_prior_source=prior_src, research_overrides=research,
-                   run_mode=("research" if research else ("pilot" if args.pilot_live else ("production" if args.live else "paper"))),
+                   run_mode=("live_review" if review_mode else ("research" if research else ("pilot" if args.pilot_live else ("production" if args.live else "paper")))),
                    stat_weights=stat_w, book_weight=book_w, books_enabled=books.enabled, code_hash=code_hash,
                    exec_model=bool(exec_model), gate_status=gate_status, ws=kalshi.ws is not None,
                    policy_id=POLICY["policy_id"], policy_family_id=POLICY["policy_family_id"], exec_model_id=POLICY["exec_model_id"],
