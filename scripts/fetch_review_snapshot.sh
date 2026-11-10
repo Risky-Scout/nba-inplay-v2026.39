@@ -11,8 +11,6 @@ trap 'rm -f "$TMP"' EXIT
 
 cd "$ROOT"
 
-# Codespaces already configures authenticated Git access to the repository.
-# Use that instead of requiring the optional GitHub CLI.
 if ! git fetch --quiet origin review-data; then
   echo "ERROR: could not fetch the private review-data branch." >&2
   echo "Make sure this Codespace was created from the repository and has repository access." >&2
@@ -27,17 +25,29 @@ fi
 
 python3 - "$TMP" <<'PY'
 import json, sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 p=json.load(open(sys.argv[1]))
-required=("schema","date","generated_at","epm","box_predictions","team_epm")
-missing=[k for k in required if k not in p]
-if missing:
-    raise SystemExit("invalid review snapshot; missing: "+", ".join(missing))
-today=datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-if p["date"] != today:
-    raise SystemExit(f"review snapshot is stale: {p['date']} (today is {today})")
-print(f"Live review data: {p['date']} | refreshed {p['generated_at']} | EPM {len(p['epm'])} | box {len(p['box_predictions'])}")
+schema=p.get("schema")
+if schema == "dt-review-snapshot-v2":
+    required=("schema","generated_at","engine","source","dates")
+    missing=[k for k in required if k not in p]
+    if missing:
+        raise SystemExit("invalid review snapshot; missing: "+", ".join(missing))
+    now=datetime.now(ZoneInfo("America/New_York"))
+    wanted={(now+timedelta(days=d)).strftime("%Y-%m-%d") for d in (-1,0,1)}
+    have=set((p.get("dates") or {}).keys())
+    if not wanted.issubset(have):
+        raise SystemExit(f"review snapshot date coverage incomplete: have {sorted(have)}, need {sorted(wanted)}")
+    print(f"Live review data: dates={','.join(sorted(have))} | refreshed {p['generated_at']}")
+elif schema == "dt-review-snapshot-v1":
+    required=("schema","date","generated_at","epm","box_predictions","team_epm")
+    missing=[k for k in required if k not in p]
+    if missing:
+        raise SystemExit("invalid review snapshot; missing: "+", ".join(missing))
+    print(f"Live review data (legacy single-date): {p['date']} | refreshed {p['generated_at']}")
+else:
+    raise SystemExit(f"unsupported review snapshot schema: {schema}")
 PY
 
 mv "$TMP" "$OUT"
