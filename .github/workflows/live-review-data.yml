@@ -1,0 +1,66 @@
+name: Live Review Data Refresh
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: live-review-data-refresh
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      DT_API_KEY: ${{ secrets.DT_API_KEY }}
+      REVIEW_SNAPSHOT_OUT: /tmp/current.json
+    steps:
+      - name: Check configuration
+        run: |
+          if [ -z "$DT_API_KEY" ]; then
+            echo "DT_API_KEY Actions secret is not configured; nothing to refresh."
+            exit 0
+          fi
+
+      - name: Checkout portfolio code
+        uses: actions/checkout@v4
+        with:
+          ref: fanatics-portfolio
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Generate current real review snapshot
+        run: python scripts/refresh_review_snapshot.py
+
+      - name: Publish snapshot to review-data branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin review-data >/dev/null 2>&1; then
+            git fetch origin review-data
+            git switch --force-create review-data origin/review-data
+          else
+            git switch --orphan review-data
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+          mkdir -p review_data
+          cp /tmp/current.json review_data/current.json
+          git add review_data/current.json
+          if git diff --cached --quiet; then
+            echo "Snapshot unchanged."
+            exit 0
+          fi
+          git commit -m "data: refresh live review snapshot"
+          git push origin HEAD:review-data
