@@ -3,26 +3,25 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-$ROOT/.review_data/current.json}"
-REPO="${GITHUB_REPOSITORY:-Risky-Scout/nba-inplay-v2026.39}"
 
 mkdir -p "$(dirname "$OUT")"
-
-if ! command -v gh >/dev/null 2>&1; then
-  echo "ERROR: GitHub CLI is required to retrieve the private live-review snapshot." >&2
-  exit 2
-fi
-
-if ! gh auth status >/dev/null 2>&1; then
-  echo "ERROR: GitHub CLI is not authenticated. In Codespaces this should be automatic." >&2
-  exit 2
-fi
 
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 
-if ! gh api   -H "Accept: application/vnd.github+json"   "/repos/$REPO/contents/review_data/current.json?ref=review-data"   --jq '.content' | tr -d '\n' | base64 --decode > "$TMP"; then
-  echo "ERROR: current real D&T review snapshot is unavailable." >&2
-  echo "The repository owner must configure the DT_API_KEY Actions secret and run the Live Review Data Refresh workflow." >&2
+cd "$ROOT"
+
+# Codespaces already configures authenticated Git access to the repository.
+# Use that instead of requiring the optional GitHub CLI.
+if ! git fetch --quiet origin review-data; then
+  echo "ERROR: could not fetch the private review-data branch." >&2
+  echo "Make sure this Codespace was created from the repository and has repository access." >&2
+  exit 2
+fi
+
+if ! git show FETCH_HEAD:review_data/current.json > "$TMP"; then
+  echo "ERROR: current real D&T review snapshot is unavailable on review-data." >&2
+  echo "The repository owner must run the Live Review Data Refresh workflow successfully." >&2
   exit 3
 fi
 
