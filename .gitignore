@@ -51,3 +51,6 @@ logs/
 *.tar.gz
 backup*/
 tmp/
+
+# Codespaces live-review cache
+.review_data/
