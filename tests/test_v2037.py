@@ -266,7 +266,7 @@ for i in range(150):
                          engine=mg.ENGINE_VERSION, trader="v", quote_policy=pol, policy_family_id=fam, policy_id="x", arm=arm))
 pd.DataFrame(rows).to_csv(os.path.join(TMP, "kalshi_fills_2026-11-01.csv"), index=False)
 fr = GP.fill_report(res)
-check("4. qp5 fills, other-family fills and exploration-arm fills never certify the qp6 base policy", fr.get("orders", 0) == 0 and not fr["passed"], str(fr))
+check("4. qp5 fills, other-family fills and exploration-arm fills never certify the qp7 base policy", fr.get("orders", 0) == 0 and not fr["passed"], str(fr))
 
 print("3) local authority (global 0 does not mean zero trading)")
 AUTH = {"*": dict(weight=0.0, tier="RESEARCH", research_reason="failed_evidence"),
@@ -724,7 +724,7 @@ check("every PILOT quote is one contract, maker, YES", len(q_[q_["tier"] == "PIL
 check("PRODUCTION quotes are sized by Kelly (some > 1 contract)", (q_.loc[q_["tier"] == "PRODUCTION", "count"] > 1).any())
 check("PILOT notional within the pilot session budget", (q_.loc[q_["tier"] == "PILOT", "count"] * q_.loc[q_["tier"] == "PILOT", "price"] / 100.0).sum() <= 0.01 * 1000 + 1e-9)
 cfg = json.load(open(sorted(glob.glob(os.path.join(TMP, "run_config_*.json")))[-1]))
-check("run config archives trader v2026.39, qp6, policy ids, authority cells", cfg["trader"] == "v2026.39" and cfg["quote_policy"] == "qp7"
+check("run config archives trader v2026.39, qp7, policy ids, authority cells", cfg["trader"] == "v2026.39" and cfg["quote_policy"] == "qp7"
       and cfg["policy_id"] and cfg["policy_family_id"] and cfg["authority_production"] == ["PTS|Q3"] and cfg["min_period_used"] == 1)
 pl = pd.read_csv(T.PRED_LOG)
 check("prediction log records the authority tier and cell per market", {"authority_tier", "authority_cell", "gap_bin"} <= set(pl.columns))
