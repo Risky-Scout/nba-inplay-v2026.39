@@ -17,11 +17,20 @@ class ReviewDunksAndThreesClient:
         if not self.path.exists():
             raise FileNotFoundError(f"review D&T snapshot not found: {self.path}")
         self._payload = json.loads(self.path.read_text())
-        if self._payload.get("schema") != "dt-review-snapshot-v1":
-            raise RuntimeError("unsupported review D&T snapshot schema")
+        schema = self._payload.get("schema")
+        if schema not in ("dt-review-snapshot-v1", "dt-review-snapshot-v2"):
+            raise RuntimeError(f"unsupported review D&T snapshot schema: {schema}")
 
     @property
     def metadata(self) -> dict:
+        if self._payload.get("schema") == "dt-review-snapshot-v2":
+            dates = sorted((self._payload.get("dates") or {}).keys())
+            return {
+                "date": ",".join(dates),
+                "generated_at": self._payload.get("generated_at"),
+                "engine": self._payload.get("engine"),
+                "source": self._payload.get("source"),
+            }
         return {
             "date": self._payload.get("date"),
             "generated_at": self._payload.get("generated_at"),
@@ -34,6 +43,19 @@ class ReviewDunksAndThreesClient:
         return pd.DataFrame(records or [])
 
     def fetch_game_day_data(self, date_str: str):
+        if self._payload.get("schema") == "dt-review-snapshot-v2":
+            day = (self._payload.get("dates") or {}).get(str(date_str))
+            if not day:
+                avail = ", ".join(sorted((self._payload.get("dates") or {}).keys())) or "none"
+                raise RuntimeError(
+                    f"review snapshot has no D&T data for {date_str}; available dates: {avail}"
+                )
+            return (
+                self._frame(day.get("epm")),
+                self._frame(day.get("box_predictions")),
+                self._frame(day.get("team_epm")),
+            )
+
         snap_date = str(self._payload.get("date") or "")
         if snap_date != str(date_str):
             raise RuntimeError(
