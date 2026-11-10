@@ -9,6 +9,41 @@ The project is designed to answer a harder question than “what is the fair pro
 
 > Given uncertain live-game state, market prices, execution risk, correlated exposures, and model uncertainty, **should an order be quoted at all—and if so, at what price and size?**
 
+## Live review in GitHub Codespaces — no reviewer accounts required
+
+The portfolio branch includes a **LIVE REVIEW** path for current or upcoming NBA games.
+
+It uses **no synthetic game, player, or market inputs**:
+
+- current NBA scoreboard, box score, and play-by-play;
+- current public Kalshi player-prop markets and REST order books;
+- a current Dunks & Threes snapshot refreshed privately in GitHub Actions.
+
+The reviewer never receives the repository owner's D&T credential. The Codespace consumes only the current read-only snapshot.
+
+### Quick start
+
+1. Open this branch in GitHub Codespaces.
+2. Validate the code:
+
+```bash
+./scripts/validate.sh
+```
+
+3. Run the current-game live review:
+
+```bash
+./scripts/run_live_review.sh
+```
+
+The live-review command is **PAPER-only by construction**. It does not pass `--live`, `--pilot-live`, or authenticated WebSocket flags, and the trader refuses any attempt to combine `--review-dt-snapshot` with real-money mode.
+
+The same probability engine, market parser, execution economics, portfolio optimizer, pre-send revalidation, and order-state machinery are used. Only the D&T authentication path is replaced by the read-only current snapshot.
+
+> **Owner setup required once:** configure the repository's `DT_API_KEY` Actions secret and run the **Live Review Data Refresh** workflow. Confirm that the Dunks & Threes subscription terms permit sharing the captured/derived snapshot with the reviewer before enabling external access.
+
+See [LIVE_REVIEW_DATA_POLICY.md](LIVE_REVIEW_DATA_POLICY.md) for provenance and safety details.
+
 ## What this project demonstrates
 
 - live player-prop probability estimation
