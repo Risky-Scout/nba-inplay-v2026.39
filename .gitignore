@@ -1,0 +1,53 @@
+# Secrets / credentials
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*
+secrets*
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# macOS / editors
+.DS_Store
+.vscode/
+.idea/
+
+# Runtime / exchange artifacts
+run_config_*.json
+kalshi_fills_*.csv
+kalshi_markouts_*.csv
+kalshi_quotes_*.csv
+kalshi_predictions_*.csv
+kalshi_quote_events_*.csv
+order_journal*.json
+settlements.csv
+model_status.json
+exec_priors.json
+calibration.json
+authority_registry.json
+challenger_exec_model.json
+champion_exec_model.json
+
+# Generated reports / artifacts
+capacity_*.csv
+pnl_attribution_*.csv
+risk_report_*.json
+reports/
+artifacts/
+logs/
+
+# Local scratch / archives
+*.zip
+*.tar.gz
+backup*/
+tmp/
