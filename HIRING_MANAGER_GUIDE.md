@@ -134,3 +134,62 @@ Useful areas to challenge:
 - how walk-forward authority avoids leakage
 - what evidence would justify promoting a challenger execution model
 - when market information should dominate the internal model
+
+
+## Market-maker audit
+
+After a game or slate has settled, run:
+
+```bash
+./scripts/run_hiring_manager_audit.sh
+```
+
+This generates a reviewer-facing package under `review_outputs/`:
+
+- `NBA_Market_Maker_Audit_YYYY-MM-DD.xlsx`
+- `NBA_Market_Maker_Audit_YYYY-MM-DD.md`
+- `NBA_Market_Maker_Audit_YYYY-MM-DD.json`
+
+The workbook is designed to answer four separate questions:
+
+1. **Are the probabilities good?**
+   - Brier score and log loss for the model
+   - the same scores for the contemporaneous market
+   - model improvement versus market
+
+2. **Where is the model good or weak?**
+   - by stat
+   - by proposed OVER / UNDER directive
+   - by stat × directive
+   - by Q1 / Q2 / Q3 / Q4 phase
+
+3. **What opportunities did the system actually act on versus miss?**
+   - every timestamp-valid eligible decision
+   - whether a quote was actually posted
+   - final settlement
+   - one-contract counterfactual P&L
+   - both profitable and losing misses
+
+4. **Did the gates add value?**
+   - rejected opportunity count
+   - profitable versus losing misses
+   - counterfactual P&L of rejected opportunities
+
+### Anti-hindsight design
+
+The raw decision audit preserves every timestamped eligible observation. Headline economics use the **first eligible observation per ticker / side** so repeated polling cannot multiply one opportunity into many.
+
+The missed-opportunity report shows both `MISSED_PROFITABLE` and `MISSED_LOSING`. It is intentionally not a winners-only hindsight report.
+
+Counterfactual P&L is measured at the logged quote price and fee for one contract. It evaluates decision quality; it does **not** claim the order would necessarily have filled.
+
+### Recommended reviewer sequence
+
+```bash
+./scripts/validate.sh
+./scripts/run_live_review.sh
+# after markets settle:
+./scripts/run_hiring_manager_audit.sh
+```
+
+That sequence lets a reviewer inspect code integrity, watch the model operate on current live data, and then independently evaluate calibration and economic decision quality after settlement.
