@@ -1,4 +1,4 @@
-"""Central foul/bonus/FT/endgame state helpers for engine 2026.29."""
+"""Central foul/bonus/FT/endgame state helpers for engine 2026.30."""
 from dataclasses import dataclass
 @dataclass
 class FoulState:
