@@ -1,7 +1,7 @@
-"""Engine 2026.29 substitution / return hazards with score-dependent path behavior."""
+"""Engine 2026.30 substitution / return hazards with score-dependent path behavior."""
 from dataclasses import dataclass,field
 import math, numpy as np
-ENGINE_VERSION="2026.29"
+ENGINE_VERSION="2026.30"
 def score_bucket(m):
     a=abs(float(m)); return "close" if a<=8 else "moderate" if a<=15 else "large" if a<=24 else "blowout"
 def _sig(x):return 1/(1+math.exp(-max(-30,min(30,x))))
