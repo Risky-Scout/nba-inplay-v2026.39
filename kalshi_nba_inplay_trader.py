@@ -2648,6 +2648,9 @@ def main():
         logger.info(f"D&T loaded for {date_str}: {len(epm_opt)} player rows, {len(box_preds)} box rows.")
         return True
 
+    review_live_promoted = set()
+    review_status_probe_ts = {}
+
     try:
         while True:
             cycle += 1
@@ -2672,7 +2675,40 @@ def main():
                         break
                     time.sleep(args.interval)
                     continue
-                active = [g for g in games if int(g.get("gameStatus", 1)) in statuses]
+                # LIVE_REVIEW robustness: the public scoreboard can lag at tip. Do not treat a scheduled
+                # game as live merely because its scheduled time passed. Instead, at most once per minute, probe the
+                # authoritative live box/PBP path and promote only on concrete started-game evidence.
+                if review_mode and not args.pregame and pre:
+                    now_probe = time.time()
+                    for _g in pre:
+                        _gid = str(_g.get("gameId", ""))
+                        if not _gid or _gid in review_live_promoted:
+                            continue
+                        if now_probe - review_status_probe_ts.get(_gid, 0.0) < 60.0:
+                            continue
+                        review_status_probe_ts[_gid] = now_probe
+                        try:
+                            _st_probe = mg.NBALiveFeedClient.fetch_live_game_state(_g)
+                            _started = (
+                                int(getattr(_st_probe, "game_status", 1) or 1) == 2
+                                or int(getattr(_st_probe.pbp_context, "last_action_number", 0) or 0) > 0
+                                or int(getattr(_st_probe, "home_score", 0) or 0) > 0
+                                or int(getattr(_st_probe, "away_score", 0) or 0) > 0
+                            )
+                            if _started:
+                                review_live_promoted.add(_gid)
+                                logger.warning(
+                                    f"LIVE REVIEW status fallback: {_st_probe.matchup_title} has started "
+                                    f"(box/PBP evidence) while scoreboard still says scheduled; promoting to live."
+                                )
+                        except Exception as _e:
+                            logger.debug(f"LIVE REVIEW status probe {_gid} failed: {_e}")
+
+                active = [
+                    g for g in games
+                    if int(g.get("gameStatus", 1)) in statuses
+                    or (review_mode and str(g.get("gameId", "")) in review_live_promoted)
+                ]
                 if not active:
                     book.reconcile({})
                     logger.info(f"Cycle #{cycle}: no tradeable games ({len(pre)} scheduled). Sleeping {args.interval}s.")
