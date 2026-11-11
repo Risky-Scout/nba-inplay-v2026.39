@@ -619,7 +619,7 @@ def segment_lengths(T_sec: float) -> List[float]:
     return out or [max(1e-6, float(T_sec))]
 CALIB_STATS = (("PTS", "p_pts"), ("REB", "p_reb"), ("AST", "p_ast"), ("3PM", "p_fg3m"))
 CALIB_TRUST = (0.67, 1.50)   # raw D&T/sim ratio outside this band => stat flagged untradeable
-ENGINE_VERSION = "2026.29"    # calibrations are only valid for the engine version they were fitted on
+ENGINE_VERSION = "2026.30"    # calibrations are only valid for the engine version they were fitted on
 # v2026.25: the extra matchup layer (DEPM, rim protection, steal pressure on top of D&T's GAME-OPTIMIZED skills, which
 # already account for opponents) is a coefficient, not a switch. Production default 0 = D&T only, until the logged A/B
 # (p_shadow = strength 1) earns it weight out of sample. Older code used MATCHUP_LAYER (True == strength 1).
