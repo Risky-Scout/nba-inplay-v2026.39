@@ -1937,6 +1937,9 @@ def main():
     ap.add_argument("--min-period", type=int, default=None,
                     help="First quarter to trade. Default: Q3 until calibration.json has fitted period weights, then Q1 "
                          "(weak periods then get small model weights instead of a ban)")
+    ap.add_argument("--q1-start-elapsed-min", type=float, default=0.0,
+                    help="When Q1 is enabled, wait this many elapsed Q1 minutes before allowing candidates. "
+                         "Example: 5 means no Q1 candidates until the game clock reaches 7:00. Q2+ unaffected.")
     ap.add_argument("--taker", action="store_true", help="Allow crossing the spread (Nov 5: takers lost $74.62 of $75.68)")
     ap.add_argument("--watch", type=float, default=2.0, help="Seconds between play-by-play checks (event-driven cancels)")
     ap.add_argument("--live-ev-premium", type=float, default=2.0, help="Extra min ROI (pct) for new orders while the ball is live")
@@ -2207,7 +2210,8 @@ def main():
     print("=" * 92)
     print(f" ENGINE: {mg.ENGINE_VERSION}   TRADER: {TRADER_VERSION}   MODE: {'LIVE' if args.live else 'PAPER'}   RUN: {RUN_ID}")
     print(f" MODEL WEIGHT: {pool_w:.2f} / {'earned (' + cal_id + ')' if (cal_id != 'none' and not mw_manual) else ('RESEARCH OVERRIDE' if mw_manual else 'none earned -> no directional trading')}")
-    print(f" NO SIDE: {'enabled' if side_on['no'] else 'disabled'}   YES SIDE: {'enabled' if side_on['yes'] else 'disabled'}   MIN PERIOD: Q{min_period}")
+    print(f" NO SIDE: {'enabled' if side_on['no'] else 'disabled'}   YES SIDE: {'enabled' if side_on['yes'] else 'disabled'}   MIN PERIOD: Q{min_period}"
+          + (f" | Q1 START: {args.q1_start_elapsed_min:g} min elapsed" if min_period <= 1 and args.q1_start_elapsed_min > 0 else ""))
     print(f" EDGE RULE: 90% LCB >= {args.min_edge_c:.1f}c (+ inventory skew)   TAIL LIMIT: CVaR95 <= {args.cvar_limit:.0%} bankroll")
     print(f" EXECUTION PRIORS: {prior_src}: YES {exec_prior['yes'][0]:+.2f}c (s.e. {exec_prior['yes'][1]:.2f}) | NO {exec_prior['no'][0]:+.2f}c (s.e. {exec_prior['no'][1]:.2f}) | quote policy {QUOTE_POLICY}")
     print(f" RESEARCH OVERRIDES: {', '.join(research) if research else 'none'}")
@@ -2380,7 +2384,7 @@ def main():
                        ("LIVE GATE", gate_status), ("BANKROLL", f"${args.bankroll:.0f}"),
                        ("CAPS", f"session {args.session_cap:.2%} game {args.game_cap:.2%} player {args.player_cap:.2%} position {args.single_cap:.2%}"
                                 + (" | 1 contract/order" if args.max_contracts == 1 else "")),
-                       ("MODEL PERIODS", f"Q{min_period}+"), ("NO STATUS", "enabled" if side_on["no"] else "disabled"),
+                       ("MODEL PERIODS", f"Q{min_period}+" + (f" (Q1 after {args.q1_start_elapsed_min:g} min elapsed)" if min_period <= 1 and args.q1_start_elapsed_min > 0 else "")), ("NO STATUS", "enabled" if side_on["no"] else "disabled"),
                        ("CVaR LIMIT", f"{args.cvar_limit:.0%} of bankroll"), ("DAILY STOP", f"{args.daily_loss:.0%} of bankroll"),
                        ("KELLY", f"{args.kelly:.2f} ({'posterior mean' if (args.kelly_mean == 'posterior' or (args.kelly_mean == 'auto' and exec_model)) else '90% LCB'} as expected return)"),
                        ("BOOK FEED", "WebSocket + REST fallback" if kalshi.ws is not None else "REST")):
@@ -2861,7 +2865,9 @@ def main():
                         gate_book = (p_book_yes is not None and book_dist is not None and book_dist <= args.book_max_line_diff + 1e-9
                                      and n_books >= args.min_books)
                         mkt_yes = m.mid
-                        in_scope = m.stat in trade_stats and st.period >= min_period
+                        q1_elapsed_min = max(0.0, (720.0 - float(_pc)) / 60.0) if st.period == 1 else None
+                        q1_warm = (st.period != 1 or q1_elapsed_min + 1e-9 >= float(args.q1_start_elapsed_min))
+                        in_scope = m.stat in trade_stats and st.period >= min_period and q1_warm
                         if in_scope and (dead or args.allow_live_ball) and args.micro and args.min_gap - 0.02 <= abs(p_yes - m.mid) <= args.max_disagree + 0.02:
                             _mp = kalshi.microprice(m.ticker)
                             if _mp is not None and m.yes_bid / 100.0 <= _mp <= m.yes_ask / 100.0:
