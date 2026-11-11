@@ -10,5 +10,5 @@ python3 tests/test_v2038.py
 echo
 echo "================================================================================"
 echo " PORTFOLIO VALIDATION: PASS"
-echo " Trader v2026.39 | Engine 2026.29 | Quote policy qp7"
+echo " Trader v2026.40 | Engine 2026.30 | Quote policy qp8"
 echo "================================================================================"
