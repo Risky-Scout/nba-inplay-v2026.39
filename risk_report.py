@@ -1,7 +1,12 @@
 """Informational block-bootstrap drawdown report; never loosens risk."""
 import numpy as np
 def _mdd(x):
-    x=np.asarray(x,float); peak=np.maximum.accumulate(x); return float(np.max(peak-x)) if len(x) else 0.0
+    """Maximum drawdown from starting equity (0 cumulative P&L), not only from an observed post-start peak."""
+    x=np.asarray(x,float)
+    if not len(x): return 0.0
+    path=np.r_[0.0,x]
+    peak=np.maximum.accumulate(path)
+    return float(np.max(peak-path))
 def risk_report(trades,bankroll,n_boot=5000,seed=39):
     if trades is None or len(trades)==0:return {}
     daily=trades.groupby("day")["pnl_usd"].sum()
