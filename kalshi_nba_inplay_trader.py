@@ -2495,7 +2495,9 @@ def main():
                 x = exec_features(side, c["stat"], c["period"], bid, ask, px, alpha, ttl_s=c["ttl"], stop=c["stop"],
                                   phase=c["phase"], qty_bid=c["qty_side_bid"], qty_ask=c["qty_side_ask"],
                                   queue_ahead=c["qty_side_bid"] if px == bid else 0.0, book_age_s=c.get("book_age_s", 0.0),
-                                  t_since_action_s=c["t_since_action_s"], micro=c["micro"])
+                                  t_since_action_s=c["t_since_action_s"], micro=c["micro"],
+                                  order_qty=max(1,int(c.get("order_qty",1))),
+                                  best_depth=max(1.0,float(c.get("qty_side_bid",0.0))))
                 qv = XM.quote_value(exec_model, x, alpha, fee_c, z=args.qev_z)
                 pf, em_model = qv["pf"], qv["em"]
                 em = lam * em_model + (1.0 - lam) * prior_m
@@ -2516,12 +2518,15 @@ def main():
             if not ok:
                 continue
             if pf is not None:
-                qev = pf * mean_e
-                qev_sd = math.sqrt(qv["qev_sd"] ** 2 + (pf * parts["sigma_c"]) ** 2)
+                fill_fraction=float(qv.get("fill_fraction",pf))
+                qev = fill_fraction * mean_e
+                qev_sd = math.sqrt(qv["qev_sd"] ** 2 + (fill_fraction * parts["sigma_c"]) ** 2)
             else:
+                fill_fraction=1.0
                 qev, qev_sd = mean_e, parts["sigma_c"]
-            scored[px] = dict(px=px, fee=fee_c, roi=roi, p_cons=p_cons, lcb=lcb, parts=parts, pf=pf, em=em,
-                              em_model=em_model, qev=qev, qev_sd=qev_sd, qev_lcb=qev - args.qev_z * qev_sd, mean_e=mean_e)
+            scored[px] = dict(px=px, fee=fee_c, roi=roi, p_cons=p_cons, lcb=lcb, parts=parts, pf=pf,
+                              fill_fraction=fill_fraction, em=em, em_model=em_model, qev=qev, qev_sd=qev_sd,
+                              qev_lcb=qev - args.qev_z * qev_sd, mean_e=mean_e)
         if not scored:
             return None, "edge"
         # v2026.38 action support: a PRODUCTION quote may only use a quote offset the champion was trained on with enough
@@ -3159,7 +3164,9 @@ def main():
                                 "arm": res["arm"], "propensity": round(res["prop"], 4), "kelly_mean": res["kelly_mean"], "w_b": w_b,
                                 "pi_b": json.dumps({str(k_): round(v_, 4) for k_, v_ in res["pi_b"].items()}), "greedy_px": res["greedy_px"],
                                 "action_price": res["px"], "action_prob": round(res["prop"], 4),
-                                "pfill": res["pf"], "fill_prob": fill_prob, "em_c": res["em"], "em_model_c": res["em_model"],
+                                "pfill": res["pf"], "fill_prob": fill_prob,
+                                "effective_fill_fraction": float(res.get("fill_fraction", fill_prob)),
+                                "em_c": res["em"], "em_model_c": res["em_model"],
                                 "em_prior_c": exec_prior[side][0], "qev_c": res["qev"], "qev_sd_c": res["qev_sd"], "alpha_c": 100.0 * (p_used - p_mkt),
                                 "ttl": ctx["ttl"], "stop": stop_now, "phase": phase_now, "t_since_action_s": round(t_act, 1),
                                 "team_id": team_of.get(m.player_id, ""), "period": st.period, "aggr": round(res["aggr"], 3),
@@ -3374,23 +3381,30 @@ def main():
                         _c["requested_qty"] = int(_allow)
                         _c["size_bucket"] = size_bucket(_allow)
                         _c["max_contracts"] = min(_allow, int(_c["max_contracts"])) if _c.get("max_contracts") else _allow
-                        _ctx = _c.get("ctx") or {}
-                        if exec_model:
-                            _sbid = int(_c.get("side_bid", _c.get("price_cents", 0)))
-                            _sask = int(_c.get("side_ask", max(_sbid + 1, _c.get("price_cents", 0) + 1)))
-                            _qa = float(_ctx.get("qty_side_bid", 0.0) if int(_c["price_cents"]) == _sbid else 0.0)
-                            _xq = exec_features(_c["side"], _c["stat"], _c.get("period", 0), _sbid, _sask, int(_c["price_cents"]),
-                                                float(_c.get("alpha_c", 0.0)), ttl_s=float(_c.get("ttl", 8.0)),
-                                                stop=str(_c.get("stop", "other")), phase=_c.get("phase"),
-                                                qty_bid=float(_ctx.get("qty_side_bid", 0.0)), qty_ask=float(_ctx.get("qty_side_ask", 0.0)),
-                                                queue_ahead=_qa, t_since_action_s=float(_c.get("t_since_action_s", 0.0)),
-                                                micro=_ctx.get("micro") or {}, order_qty=_allow,
-                                                best_depth=float(_ctx.get("qty_side_bid", 0.0)))
-                            _qv = XM.quote_value(exec_model, _xq, float(_c.get("alpha_c", 0.0)), float(_c.get("fee_cents", 0.0)))
-                            _c["fill_prob"] = float(_qv["pf"])
-                            _c["effective_fill_fraction"] = float(_qv.get("fill_fraction", _qv["pf"]))
-                        else:
-                            _c["effective_fill_fraction"] = float(_c.get("fill_prob", 1.0))
+                        _ctx = dict(_c.get("ctx") or {})
+                        _sbid = int(_c.get("side_bid", _c.get("price_cents", 0)))
+                        _sask = int(_c.get("side_ask", max(_sbid + 1, _c.get("price_cents", 0) + 1)))
+                        # Re-score the EXACT authorized (price, qty, TTL) action. For exploration/probe orders
+                        # max_contracts=1, so this is identical; multi-contract production orders can reprice.
+                        _ctx["order_qty"] = int(_allow)
+                        _ctx["force_arm"] = _c.get("arm", "base")
+                        _ctx["force_prop"] = _c.get("propensity", 1.0)
+                        _resq, _whyq = price_side(_ctx, _sbid, _sask, float(_c["p_mkt"]), float(_c["p_used"]), _tox)
+                        if _resq is None or _resq.get("rejected"):
+                            funnel.block("exact quantity action no longer economic")
+                            continue
+                        _c.update(price_cents=int(_resq["px"]), fee_cents=float(_resq["fee"]), fee_c=float(_resq["fee"]),
+                                  expected_edge_c=float(_resq["cond_edge_c"]), cond_edge_c=float(_resq["cond_edge_c"]),
+                                  lcb_edge_c=float(_resq["lcb"]), roi=float(_resq["roi"]),
+                                  fill_prob=float(_resq["pf"] if _resq["pf"] is not None else 1.0),
+                                  effective_fill_fraction=float(_resq.get("fill_fraction", _resq["pf"] if _resq["pf"] is not None else 1.0)),
+                                  em_c=float(_resq["em"]), em_model_c=_resq["em_model"],
+                                  qev_c=float(_resq["qev"]), qev_sd_c=float(_resq["qev_sd"]),
+                                  quote_level=_resq["quote_level"], action_price=int(_resq["px"]),
+                                  greedy_px=int(_resq["greedy_px"]), action_prob=float(_resq["prop"]),
+                                  propensity=float(_resq["prop"]), pi_b=json.dumps({str(k):round(v,4) for k,v in _resq["pi_b"].items()}),
+                                  unit_c=float(_resq["px"]+_resq["fee"]))
+                        _c["ctx"]=_ctx
                         _depth = max(float(_ctx.get("qty_side_bid", 0.0)), 1.0)
                         _queue = max(float(_ctx.get("qty_side_bid", 0.0) if int(_c["price_cents"]) == int(_c.get("side_bid", _c["price_cents"])) else 0.0), 1.0)
                         _c["qty_over_best_depth"] = _allow / _depth
