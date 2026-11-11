@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""v2026.39 / engine 2026.29 regression checks."""
+"""v2026.40 / engine 2026.30 regression checks."""
 import json, os, tempfile
 import numpy as np, pandas as pd
 import kalshi_exec_model as XM
@@ -24,7 +24,7 @@ def ck(name,cond,detail=""):
     print(("  [ok] " if cond else "  [FAIL] ")+name+(f" ({detail})" if detail else ""))
     if not cond:fails.append(name)
 
-ck("versions",T.TRADER_VERSION=="v2026.39" and T.QUOTE_POLICY=="qp7" and FE.QUOTE_POLICY=="qp7" and GP.QUOTE_POLICY=="qp7" and MG.ENGINE_VERSION=="2026.29")
+ck("versions",T.TRADER_VERSION=="v2026.40" and T.QUOTE_POLICY=="qp8" and FE.QUOTE_POLICY=="qp8" and GP.QUOTE_POLICY=="qp8" and MG.ENGINE_VERSION=="2026.30")
 ck("valid numeric zero is preserved", MG.finite_or_default(0.0,5.5)==0.0 and MG.finite_or_default(np.nan,5.5)==5.5)
 _epm=pd.DataFrame([{"team_id":1,"player_id":77,"player_name":"Semantic Test","p_mp_48":20.0,
     "p_mp_48_active":30.0,"p_active":.6,"p_played":.5,"p_usg":.2}])
@@ -103,9 +103,9 @@ ck("quote value exposes exact-request expected total value",
 
 with tempfile.TemporaryDirectory() as td:
     p=os.path.join(td,"old.json")
-    json.dump({"quote_policy":"qp7","validated":True,"features":[x for x in XM.EXEC_FEATURES if x!="order_qty"],
+    json.dump({"quote_policy":"qp8","validated":True,"features":[x for x in XM.EXEC_FEATURES if x!="order_qty"],
                "scaler":{"mean":[0],"sd":[1]},"fill":[0],"mark_all":[0]},open(p,"w"))
-    ck("old exec schema cannot load under qp7",XM.load_model(p,"qp7") is None)
+    ck("old exec schema cannot load under qp8",XM.load_model(p,"qp8") is None)
 
 q=pd.DataFrame([{"order_id":"a","requested_qty":10}])
 ev=pd.DataFrame([{"order_id":"a","event":"fill","contracts":1,"reason":"","filled":1},
@@ -211,4 +211,4 @@ ck("full-notional CVaR remains after size rescore","cvar_scale(orders, _others" 
 
 if fails:
     print("FAILED:",fails); raise SystemExit(1)
-print("ALL v2026.39 CHECKS PASSED")
+print("ALL v2026.40 CHECKS PASSED")
