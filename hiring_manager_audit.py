@@ -425,6 +425,45 @@ def funnel_audit() -> pd.DataFrame:
     return _read("kalshi_funnel_*.csv")
 
 
+def audit_metadata() -> pd.DataFrame:
+    """Version/provenance fields that make the report reproducible."""
+    cfgs=sorted(glob.glob(str(HERE / "run_config_*.json")))
+    cfg={}
+    cfg_source=None
+    if cfgs:
+        cfg_source=os.path.basename(cfgs[-1])
+        try:
+            cfg=json.load(open(cfgs[-1]))
+        except Exception:
+            cfg={}
+    cal={}
+    cal_path=HERE / "calibration.json"
+    if cal_path.exists():
+        try:
+            cal=json.load(open(cal_path))
+        except Exception:
+            cal={}
+    meta=cal.get("_meta",{}) if isinstance(cal,dict) else {}
+    rows=[
+        ("generated_at",datetime.now().isoformat(timespec="seconds")),
+        ("engine",ENGINE_VERSION),
+        ("run_config_source",cfg_source),
+        ("trader",cfg.get("trader")),
+        ("code_hash",cfg.get("code_hash")),
+        ("run_id",cfg.get("run_id")),
+        ("run_mode",cfg.get("run_mode")),
+        ("quote_policy",cfg.get("quote_policy")),
+        ("policy_id",cfg.get("policy_id")),
+        ("policy_family_id",cfg.get("policy_family_id")),
+        ("calibration_id",cfg.get("calibration_id",meta.get("id"))),
+        ("calibration_engine",meta.get("engine")),
+        ("calibration_schema",meta.get("schema")),
+        ("calibration_fitted_through",meta.get("fitted_through") or meta.get("trained_through")),
+        ("sampling_spec","same settled current-engine rows; explicit timestamp/market/phase/game/date views"),
+    ]
+    return pd.DataFrame(rows,columns=["Field","Value"])
+
+
 def _style_workbook(path: Path):
     from openpyxl import load_workbook
     from openpyxl.styles import Font, PatternFill, Alignment
@@ -542,6 +581,7 @@ def main():
     opp, economic, gate = opportunity_audit(res, args.match_window_seconds)
     decisions, decision_attr = decision_ledger_audit(res)
     funnel = funnel_audit()
+    metadata = audit_metadata()
 
     stamp = datetime.now().strftime("%Y-%m-%d")
     xlsx = out_dir / f"NBA_Market_Maker_Audit_{stamp}.xlsx"
@@ -549,6 +589,7 @@ def main():
     js = out_dir / f"NBA_Market_Maker_Audit_{stamp}.json"
 
     with pd.ExcelWriter(xlsx, engine="openpyxl") as w:
+        metadata.to_excel(w, sheet_name="Audit Metadata", index=False)
         for name, table in tables.items():
             table.to_excel(w, sheet_name=name[:31], index=False)
         economic.to_excel(w, sheet_name="Economic Summary", index=False)
@@ -589,6 +630,7 @@ def main():
         "settled_eligible_observations": settled_opp,
         "decision_ledger_rows": int(len(decisions)),
         "outputs": {"workbook": str(xlsx), "markdown": str(md)},
+        "metadata": dict(zip(metadata["Field"], metadata["Value"])),
         "overall": tables.get("Calibration Overall", pd.DataFrame()).to_dict("records"),
         "economic_summary": economic.to_dict("records"),
         "gate_attribution": gate.to_dict("records"),
