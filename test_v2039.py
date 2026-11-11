@@ -12,6 +12,7 @@ from execution_size_authority import size_bucket, highest_authorized_qty
 from execution_hazard import cumulative_fill_probability, action_key
 from rotation_hazard import RotationHazardModel, pathwise_blowout_probability
 import residual_alpha as RA
+import fit_residual_alpha as FRA
 import risk_report as RR
 import endgame_state as ES
 from kalshi_ws import KalshiWSBook
@@ -84,6 +85,13 @@ _wb._handle({"type":"orderbook_delta","sid":1,"seq":4,"msg":{"market_ticker":"Q"
 _wb._handle({"type":"orderbook_delta","sid":1,"seq":5,"msg":{"market_ticker":"Q","price_dollars":"0.50","delta_fp":"4","side":"yes"}})
 _q3 = _wb.queue_estimate("o")
 ck("price-level reset invalidates prior queue priority", _q3["price_level_resets"]==1 and abs(_q3["queue_ahead_est"]-4.0)<1e-9, str(_q3))
+_wf=KalshiWSBook(lambda:{})
+_wf.want={"F"}
+_wf._handle({"type":"orderbook_snapshot","sid":9,"seq":1,"msg":{
+    "market_ticker":"F","yes_dollars_fp":[["0.505","10"]],"no_dollars_fp":[["0.49","10"]]}})
+ck("fractional-cent WS book is rejected instead of rounded",
+   "F" in _wf.fractional_price_tickers and _wf.best("F") is None)
+
 
 rh=RotationHazardModel()
 base=dict(player_id=1,team_id=1,role="starter",starter=True,completed_stints=1,period=4,seconds_remaining_in_period=360,
@@ -126,6 +134,23 @@ ck("legacy post calibration disabled by default",eng.legacy_post_calibration is 
 
 X=np.zeros((2,len(RA.FEATURES))); p=np.array([.3,.6])
 ck("residual alpha uses fixed market offset",np.allclose(RA.predict({"beta":[0]*len(RA.FEATURES)},p,X),p))
+_rdf=pd.DataFrame({
+    "date":["2026-11-01"]*60+["2026-11-02"]*20,
+    "game":["g1"]*30+["g2"]*30+["g3"]*20,
+    "phase":["Q2"]*80,
+    "p_market":np.full(80,.5),
+    "y":np.r_[np.zeros(40),np.ones(40)],
+    "const":np.ones(80),
+    "x":np.r_[np.linspace(-1,1,60),np.linspace(100,120,20)]
+})
+_mdl=FRA.fit_model(_rdf.iloc[:60],["const","x"])
+_pred=RA.predict(_mdl,_rdf.iloc[60:].p_market.values,_rdf.iloc[60:][["const","x"]].values)
+ck("residual-alpha scaler is training-only and applied at predict time",
+   abs(_mdl["scaler"]["mean"][1]-_rdf.iloc[:60].x.mean())<1e-12 and np.isfinite(_pred).all())
+_w=FRA.evidence_weights(pd.DataFrame({"game":["a"]*10+["b"]*2,"phase":["Q2"]*12}))
+ck("residual-alpha game/phase weighting prevents polling volume domination",
+   abs(_w[:10].sum()-_w[10:].sum())<1e-9)
+
 
 src=open("kalshi_nba_inplay_trader.py").read()
 ck("live Kelly hard cap exists",'min(max(0.0, float(args.kelly)), 0.10) if args.live' in src)
