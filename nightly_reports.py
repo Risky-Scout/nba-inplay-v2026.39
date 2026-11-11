@@ -147,7 +147,8 @@ def account_ledger_report(here,settlements):
     trading_cash=float(f["signed_cash_flow_usd"].sum())
     settled_equity=trading_cash+settlement_cash
     out={
-        "status":"OK",
+        "status":"TRADING_LEDGER_ONLY",
+        "reconciled_to_exchange":False,
         "live_fill_rows":int(len(f)),
         "signed_fill_cash_flow_usd":trading_cash,
         "realized_exit_pnl_usd":float(realized_exit),
@@ -156,6 +157,7 @@ def account_ledger_report(here,settlements):
         "trading_equity_after_settlement_usd":float(settled_equity),
         "unsettled_open_contracts":float(unsettled_notional),
         "scope":"LIVE trading fills only; deposits/withdrawals/rebates outside fill rows not included",
+        "reconciliation_note":"Do not label this actual account P&L until exchange balance, positions, transfers and corrections reconcile.",
     }
     date=datetime.now().strftime("%Y-%m-%d")
     path=os.path.join(here,f"account_ledger_{date}.json")
