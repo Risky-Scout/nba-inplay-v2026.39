@@ -17,12 +17,13 @@ Solve  max  mu'x - (gamma/2) x' Sigma x,  x = existing + new  (fractions of bank
        s.t. session cap on total open risk, per-game cap, per-position cap, new >= 0.
 gamma = 2 -> half Kelly.
 
-v2026.39 quantity-aware fill objective. A resting quote returns F x R_contract with F ~ Bernoulli(phi) (phi = P(fill)):
-    mu_i      = confidence_i x phi_i x conditional_edge_i / unit_cost_i
-    Var_q(i)  = phi_i Var(R_i | fill) + phi_i (1 - phi_i) mu_c,i^2          (mu_c = conditional return per $)
-    Cov_q(ij) = sqrt(phi_i phi_j) Cov(R_i, R_j)                             (conservative until joint fill data exist)
-Confidence and P(fill) discount EXPECTED return only. Every hard cap (session, game, player, position, group caps) and
-the integer contract count stay at FULL notional: an order that can fill is sized as if it will.
+v2026.39 quantity-aware fill objective. Expected return is discounted by the modelled expected fill FRACTION.
+Until a validated JOINT fill-quantity/outcome scenario model exists, risk is deliberately NOT discounted by fill
+probability/fraction:
+    mu_i      = confidence_i x E[F_i] x conditional_edge_i / unit_cost_i
+    Sigma_q   = full-requested-notional conditional outcome covariance
+This is conservative: low expected fill can reduce expected return but cannot manufacture diversification or make a
+pending order look safer. Every hard cap and the integer contract count also stay at FULL requested notional.
 """
 import numpy as np
 from scipy.optimize import minimize
@@ -122,9 +123,9 @@ class CorrelatedKellyQP:
         fs = dict(model_sd=self.model_sd, stat_sd=self.stat_sd, game_sd=self.game_sd, team_sd=self.team_sd,
                   player_sd=self.player_sd)
         sigma_c = self.build_covariance_matrix(candidates, **fs)
-        sq = np.sqrt(phi)
-        sigma = sigma_c * np.outer(sq, sq)                     # sqrt(phi_i phi_j) Cov; diagonal = phi Var(R | fill)
-        sigma[np.diag_indices(n)] += phi * (1.0 - phi) * mu_c ** 2
+        # No validated joint fill-quantity scenario model yet: use full requested-notional risk.
+        # Expected fill fraction discounts mu only; it never discounts covariance or held-position interaction.
+        sigma = sigma_c.copy()
         cross = np.zeros(n)
         if held:
             keys = {(c["ticker"], c["side"]) for c in candidates}
@@ -132,7 +133,7 @@ class CorrelatedKellyQP:
             if H:
                 full = self.build_covariance_matrix(candidates + H, **fs)
                 hv = np.array([h["exposure_usd"] / bankroll for h in H])
-                cross = sq * (full[:n, n:] @ hv)               # held exposure is already filled (phi = 1)
+                cross = full[:n, n:] @ hv                       # full-notional interaction with held exposure
 
         e = np.array([max(0.0, positions.get((c["ticker"], c["side"]), {}).get("cost_usd", 0.0)) / bankroll for c in candidates])
         tot_open = sum(max(0.0, v.get("cost_usd", 0.0)) for v in positions.values()) / bankroll
