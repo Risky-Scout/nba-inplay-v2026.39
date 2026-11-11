@@ -432,7 +432,8 @@ class NBALiveFeedClient:
             home_score=int(home.get("score", 0)), away_score=int(away.get("score", 0)),
             possession_team=poss_team, on_court_home=on_court_home[:5],
             on_court_away=on_court_away[:5], live_box=live_box, pbp_context=pbp_ctx,
-            game_code=str(game_summary.get("gameCode", "")), game_status=int(game_summary.get("gameStatus", 1) or 1)
+            game_code=str(game_summary.get("gameCode", "")),
+            game_status=int(game.get("gameStatus", game_summary.get("gameStatus", 1)) or 1)
         )
 
 class RoleCalibratedMarkovCompiler:
