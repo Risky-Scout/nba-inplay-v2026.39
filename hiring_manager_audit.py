@@ -288,6 +288,41 @@ def opportunity_audit(res: dict[str, str], match_window_s: float = 60.0):
     return e, economic, gate
 
 
+def decision_ledger_audit(res: dict[str, str]):
+    d = _read("kalshi_decisions_*.csv")
+    if d.empty:
+        return d, pd.DataFrame()
+    if "engine" in d.columns:
+        d = d[d["engine"].astype(str) == ENGINE_VERSION].copy()
+    if d.empty:
+        return d, pd.DataFrame()
+    d["settlement"] = d["ticker"].map(res) if "ticker" in d.columns else None
+    d["y_yes"] = d["settlement"].map({"yes": 1.0, "no": 0.0}) if "settlement" in d.columns else np.nan
+    d["side"] = d.get("side", pd.Series("", index=d.index)).astype(str).str.lower()
+    d["directive"] = np.where(d["side"].eq("yes"), "OVER", "UNDER")
+    d["quote_price"] = _num(d, "quote_price")
+    d["fee_c"] = _num(d, "fee_c", 0.0).fillna(0.0)
+    d["settled"] = d["y_yes"].notna()
+    d["won"] = np.where(d["settled"], np.where(d["side"].eq("yes"), d["y_yes"], 1.0 - d["y_yes"]), np.nan)
+    priced = d["settled"] & d["quote_price"].notna()
+    d["counterfactual_net_c"] = np.where(priced, d["won"] * 100.0 - d["quote_price"] - d["fee_c"], np.nan)
+    d["counterfactual_pnl_$"] = d["counterfactual_net_c"] / 100.0
+    if "reason" not in d.columns:
+        d["reason"] = "UNKNOWN"
+    if "stage" not in d.columns:
+        d["stage"] = "UNKNOWN"
+    attr = d.groupby(["stage","reason"], dropna=False).agg(
+        Decisions=("ticker","size"),
+        Settled=("settled","sum"),
+        Priced_Settled=("counterfactual_net_c", lambda x: int(x.notna().sum())),
+        Profitable=("counterfactual_net_c", lambda x: int((x > 0).sum())),
+        Losing=("counterfactual_net_c", lambda x: int((x < 0).sum())),
+        Mean_Counterfactual_Net_c=("counterfactual_net_c","mean"),
+        Counterfactual_1Contract_PnL_$=("counterfactual_pnl_$","sum"),
+    ).reset_index()
+    return d, attr
+
+
 def funnel_audit() -> pd.DataFrame:
     return _read("kalshi_funnel_*.csv")
 
@@ -315,7 +350,7 @@ def _style_workbook(path: Path):
     wb.save(path)
 
 
-def _write_markdown(path: Path, tables, economic, gate, pred_rows, opp_rows, settled_opp):
+def _write_markdown(path: Path, tables, economic, gate, decision_attr, pred_rows, opp_rows, settled_opp, decision_rows):
     def md_table(d: pd.DataFrame, n=30):
         if d is None or d.empty:
             return "_No settled evidence yet._"
@@ -342,6 +377,7 @@ def _write_markdown(path: Path, tables, economic, gate, pred_rows, opp_rows, set
         f"- Settled prediction rows scored: {pred_rows:,}",
         f"- Eligible decision observations audited: {opp_rows:,}",
         f"- Settled eligible observations: {settled_opp:,}",
+        f"- Side-level decision ledger rows: {decision_rows:,}",
         "",
         "## Overall probability quality",
         "",
@@ -354,6 +390,10 @@ def _write_markdown(path: Path, tables, economic, gate, pred_rows, opp_rows, set
         "## Missed-opportunity / gate attribution",
         "",
         md_table(gate),
+        "",
+        "## Full decision-gate attribution",
+        "",
+        md_table(decision_attr),
         "",
         "## Calibration by stat",
         "",
@@ -393,14 +433,16 @@ def main():
 
     pred_raw = _read("kalshi_predictions_*.csv")
     elig_raw = _read("kalshi_eligible_*.csv")
+    decision_raw = _read("kalshi_decisions_*.csv")
     tickers = set()
-    for d in (pred_raw, elig_raw):
+    for d in (pred_raw, elig_raw, decision_raw):
         if not d.empty and "ticker" in d.columns:
             tickers.update(d["ticker"].dropna().astype(str).unique())
     res = settlements(sorted(tickers)) if tickers else {}
 
     pred, tables = predictive_audit(res)
     opp, economic, gate = opportunity_audit(res, args.match_window_seconds)
+    decisions, decision_attr = decision_ledger_audit(res)
     funnel = funnel_audit()
 
     stamp = datetime.now().strftime("%Y-%m-%d")
@@ -413,6 +455,10 @@ def main():
             table.to_excel(w, sheet_name=name[:31], index=False)
         economic.to_excel(w, sheet_name="Economic Summary", index=False)
         gate.to_excel(w, sheet_name="Gate Attribution", index=False)
+        decision_attr.to_excel(w, sheet_name="Decision Gate Attribution", index=False)
+        if not decisions.empty:
+            keepd = [x for x in ["time","game","clock","player","stat","directive","line","ticker","side","phase","period","stage","reason","p_model","p_mkt","p_used","p_book","gap","yes_bid","yes_ask","quote_price","fee_c","exec_ev_c","fill_prob","tier","settlement","won","counterfactual_net_c","counterfactual_pnl_$","run_id"] if x in decisions.columns]
+            decisions[keepd].to_excel(w, sheet_name="Decision Ledger", index=False)
         if not opp.empty:
             show = [c for c in [
                 "time","game","player","stat","directive","line","ticker","side","period","phase",
@@ -435,7 +481,7 @@ def main():
 
     _style_workbook(xlsx)
     settled_opp = int(opp["settled"].sum()) if not opp.empty else 0
-    _write_markdown(md, tables, economic, gate, len(pred), len(opp), settled_opp)
+    _write_markdown(md, tables, economic, gate, decision_attr, len(pred), len(opp), settled_opp, len(decisions))
 
     summary = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -443,10 +489,12 @@ def main():
         "settled_prediction_rows": int(len(pred)),
         "eligible_observations": int(len(opp)),
         "settled_eligible_observations": settled_opp,
+        "decision_ledger_rows": int(len(decisions)),
         "outputs": {"workbook": str(xlsx), "markdown": str(md)},
         "overall": tables.get("Calibration Overall", pd.DataFrame()).to_dict("records"),
         "economic_summary": economic.to_dict("records"),
         "gate_attribution": gate.to_dict("records"),
+        "decision_gate_attribution": decision_attr.to_dict("records"),
     }
     js.write_text(json.dumps(summary, indent=2, default=str))
 
@@ -458,6 +506,7 @@ def main():
     print(f"JSON:     {js}")
     print(f"Settled predictions: {len(pred):,}")
     print(f"Eligible observations: {len(opp):,}")
+    print(f"Decision ledger rows: {len(decisions):,}")
     if len(pred):
         o = tables["Calibration Overall"].iloc[0]
         print(f"Model Brier {o['Model_Brier']:.4f} vs market {o['Market_Brier']:.4f} "
