@@ -13,4 +13,11 @@ echo "==========================================================================
 SNAPSHOT="$ROOT/.review_data/current.json"
 bash "$ROOT/scripts/fetch_review_snapshot.sh" "$SNAPSHOT" >/dev/null
 
-exec python3 kalshi_nba_inplay_trader.py   --review-dt-snapshot "$SNAPSHOT"   --sims 8000   --shadow-sims 2000   --model-weight 0.35   --no-books
+exec python3 kalshi_nba_inplay_trader.py \
+  --review-dt-snapshot "$SNAPSHOT" \
+  --sims 8000 \
+  --shadow-sims 2000 \
+  --model-weight 0.35 \
+  --min-period 1 \
+  --q1-start-elapsed-min 5 \
+  --no-books
