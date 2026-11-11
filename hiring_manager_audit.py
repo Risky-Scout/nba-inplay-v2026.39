@@ -172,12 +172,35 @@ def _paired_loss_views(d: pd.DataFrame) -> dict[str, pd.DataFrame]:
         "LogLoss_Improvement_vs_Market":float(g.logloss_improvement.mean()) if len(g) else np.nan,
         "LogLoss_Improvement_90CI_Lo":llo,"LogLoss_Improvement_90CI_Hi":lhi,
     }])
+
+    # Trading-date blocks: preserve all within-date dependence, then bootstrap whole dates.
+    if "timestamp" in x.columns:
+        x["_trade_date"]=x["timestamp"].astype(str).str[:10]
+    else:
+        x["_trade_date"]="unknown"
+    db=x.groupby("_trade_date",dropna=False).agg(
+        rows=("ticker","size"),
+        games=("game","nunique"),
+        brier_improvement=("brier_delta_row","mean"),
+        logloss_improvement=("logloss_delta_row","mean"),
+    ).reset_index().rename(columns={"_trade_date":"date"})
+    dblo,dbhi=ci(db.brier_improvement.values) if len(db) else (np.nan,np.nan)
+    dllo,dlhi=ci(db.logloss_improvement.values) if len(db) else (np.nan,np.nan)
+    date_summary=pd.DataFrame([{
+        "View":"Equal-weighted trading dates","N_dates":int(len(db)),
+        "Brier_Improvement_vs_Market":float(db.brier_improvement.mean()) if len(db) else np.nan,
+        "Brier_Improvement_90CI_Lo":dblo,"Brier_Improvement_90CI_Hi":dbhi,
+        "LogLoss_Improvement_vs_Market":float(db.logloss_improvement.mean()) if len(db) else np.nan,
+        "LogLoss_Improvement_90CI_Lo":dllo,"LogLoss_Improvement_90CI_Hi":dlhi,
+    }])
     return {
         "Equal Weighted Markets":market_summary,
         "Market Loss Detail":m,
         "Phase Snapshots":snap,
         "Equal Weighted Games":game_summary,
         "Game Loss Detail":g,
+        "Date Block Summary":date_summary,
+        "Date Block Detail":db,
     }
 
 
