@@ -78,7 +78,11 @@ def settled_fills(here,settlements,mode="LIVE",entries_only=True):
     fee_pc=100.0*_num(f,"fee_usd",0.0)/np.maximum(_num(f,"contracts",1.0),1e-9)
     f["realized_net_c"]=win*100.0-_num(f,"price_cents",0.0)-fee_pc
     f["fee_c"]=fee_pc
-    f["day"]=f.get("timestamp",pd.Series("",index=f.index)).astype(str).str[:10]
+    if "trade_date_ny" in f.columns:
+        f["day"]=f["trade_date_ny"].astype(str)
+    else:
+        # Legacy rows: preserve their logged calendar date; new rows carry explicit America/New_York trade_date_ny.
+        f["day"]=f.get("timestamp",pd.Series("",index=f.index)).astype(str).str[:10]
     f["game_tok"]=f["ticker"].astype(str).str.split("-").str[1]
     return f
 
