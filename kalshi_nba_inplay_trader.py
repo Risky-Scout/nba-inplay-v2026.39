@@ -147,7 +147,7 @@ TTL_GENERIC = 8             # any other dead ball
 EDGE_RULE = "lcb90>=0.5c+inv_skew"
 MARK_H = (5, 15, 30, 120)   # markout horizons, seconds after the fill
 PRED_COLS = ['timestamp', 'ticker', 'clock', 'player', 'stat', 'line', 'p_model_yes', 'p_mkt_yes', 'p_model_raw', 'cal_id',
-             'model_mean', 'model_sd', 'proj_min', 'current', 'engine', 'p_book', 'n_books', 'p_micro', 'p_shadow',
+             'model_mean', 'model_sd', 'proj_min', 'current', 'engine', 'p_book', 'n_books', 'p_micro', 'p_shadow', 'p_trade_yes',
              'yes_bid', 'yes_ask', 'period', 'dead_ball',   # v2026.29: book + regime, so weights can be fitted where we trade
              'phase', 'starter', 'stint_min', 'pf', 'stints_done', 'sim_pace', 'pace_target',   # v2026.34: H1 attribution
              'authority_tier', 'authority_cell', 'authority_weight', 'gap_bin']                  # v2026.37: local authority
@@ -2949,6 +2949,7 @@ def main():
                         if sim_sh is not None and m.player_id in sim_sh["id_to_idx"]:
                             _ssm = sim_sh[m.stat][:, sim_sh["id_to_idx"][m.player_id]]
                             p_sh_yes = calibrate(cal, m.stat, (float((_ssm > m.line).sum()) + 0.5) / (len(_ssm) + 1.0))
+                        pu_yes = pool3(p_yes, mkt_yes, p_bk_y, w_m, w_b)
                         pred_meta.append((gid, m.player_id, m.stat, m.line))
                         pred_rows.append((datetime.now().isoformat(timespec='seconds'), m.ticker, st.clock_display, m.player_name,
                                           m.stat, m.line, round(p_yes, 4), round(m.mid, 4), round(p_yes_raw, 4), cal_id,
@@ -2956,7 +2957,7 @@ def main():
                                           round(float(sim['MIN_PROJ'].get(m.player_id, 0.0)), 1),
                                           sum(int(st.live_box.get(m.player_id, {}).get(k, 0)) for k in (('PTS', 'REB', 'AST') if m.stat == 'PRA' else (m.stat,))),
                                           mg.ENGINE_VERSION, None if p_book_yes is None else round(p_book_yes, 4), n_books,
-                                          round(mkt_yes, 4), None if p_sh_yes is None else round(p_sh_yes, 4),
+                                          round(mkt_yes, 4), None if p_sh_yes is None else round(p_sh_yes, 4), round(pu_yes, 4),
                                           m.yes_bid, m.yes_ask, st.period, bool(dead),
                                           phase_now, bool(st.live_box.get(m.player_id, {}).get("STARTER", False)),
                                           st.pbp_context.current_stint_minutes.get(m.player_id),
@@ -2971,7 +2972,6 @@ def main():
                             funnel.add("in_scope")
                         if kalshi.ws is not None and in_scope:
                             ws_want.add(m.ticker)            # warm the WebSocket book early for every plausibly tradeable market
-                        pu_yes = pool3(p_yes, mkt_yes, p_bk_y, w_m, w_b)
                         mk_ctx.append(dict(m=m, smp=smp, n=n, p_yes=p_yes, mkt_yes=mkt_yes, p_book_yes=p_book_yes, gate_book=gate_book,
                                            in_scope=in_scope, auth=auth, w_m=w_m, w_b=w_b, p_sh_yes=p_sh_yes, pu_yes=pu_yes,
                                            gap_y=gap_y))
