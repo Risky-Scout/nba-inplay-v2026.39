@@ -62,6 +62,14 @@ with tempfile.TemporaryDirectory() as _ld:
     ck("account ledger excludes PAPER rows",_lo.get("live_fill_rows")==2)
     ck("account ledger includes signed exit cash flow and settlement",abs(_lo.get("trading_equity_after_settlement_usd",999)-.8)<1e-12,str(_lo))
 
+    pd.DataFrame([
+      {"ticker":"E","requested_qty":2,"cond_edge_c":2.0,"effective_fill_fraction":.5}
+    ]).to_csv(os.path.join(_ld,"kalshi_eligible_2026-11-11.csv"),index=False)
+    _cp,_co=NR.capacity_report(_ld)
+    ck("capacity report refuses linear bankroll extrapolation",
+       len(_co)==3 and (~_co["bankroll_extrapolation_supported"].astype(bool)).all()
+       and "bankroll" not in _co.columns)
+
 for k in ("order_qty","qty_over_best_depth","qty_over_queue_ahead","log_order_qty"):
     ck("execution feature "+k,k in XM.EXEC_FEATURES)
 
