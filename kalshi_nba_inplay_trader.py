@@ -168,6 +168,7 @@ EXEC_PRIORS_JSON = os.path.join(CURRENT_DIR, "exec_priors.json")
 EXEC_MODEL_JSON = os.path.join(CURRENT_DIR, "champion_exec_model.json")      # v2026.37: only a PROMOTED model trades
 CHALLENGER_JSON = os.path.join(CURRENT_DIR, "challenger_exec_model.json")    # scored in shadow on every quote
 FUNNEL_CSV = os.path.join(CURRENT_DIR, f"kalshi_funnel_{TODAY_STR}.csv")
+DECISION_CSV = os.path.join(CURRENT_DIR, f"kalshi_decisions_{TODAY_STR}.csv")   # side-level decision / rejection ledger
 PROD_PROFILE_JSON = os.path.join(CURRENT_DIR, "production_profile.json")   # written by grade_predictions.py from LIVE maker orders
 STATUS_JSON = os.path.join(CURRENT_DIR, "model_status.json")
 SIZE_AUTH_JSON = os.path.join(CURRENT_DIR, "exec_size_authority.json")
@@ -1169,6 +1170,21 @@ QUOTE_KEYS = ("pi_b", "greedy_px", "action_price", "action_prob", "tier", "confi
               "queue_ahead", "requested_qty", "size_bucket", "qty_over_best_depth", "qty_over_queue_ahead", "log_order_qty", "pi_b_action", "t_since_action_s", "alpha_c", "em_c", "em_model_c", "em_prior_c", "qev_c", "qev_sd_c",
               "fill_prob", "cond_edge_c", "challenger_pf", "challenger_qev", "is_probe", "side_bid", "side_ask",
               "mid_vel_250ms", "mid_vel_1s", "spread_vel", "imb_vel", "bid_depletion", "ask_replenish", "has_ws", "team_id")
+
+
+def decision_log(**row):
+    """Append one side-level review decision without changing trading behavior."""
+    base = {
+        "time": datetime.now().isoformat(timespec="seconds"),
+        "run_id": RUN_ID,
+        "engine": mg.ENGINE_VERSION,
+        "quote_policy": QUOTE_POLICY,
+    }
+    base.update(row)
+    try:
+        csv_append(DECISION_CSV, [base])
+    except Exception:
+        pass
 
 
 def quote_log(oid: str, bet: dict, m: "KalshiMarket", count: int):
@@ -3001,22 +3017,38 @@ def main():
                                 continue   # market moved 3c+ against our last fill: never average down
                             if held_other or not in_scope:
                                 continue
+                            p_model = p_yes if side == "yes" else 1.0 - p_yes
                             if late_close:
                                 n_gate["late_close"] += 1
                                 funnel.block("late close game (endgame not modelled)")
+                                decision_log(game=st.matchup_title, clock=st.clock_display, player=m.player_name, player_id=m.player_id,
+                                             stat=m.stat, line=m.line, ticker=m.ticker, side=side, phase=phase_now, period=st.period,
+                                             p_model=round(p_model,4), p_mkt=round(p_mkt,4), yes_bid=m.yes_bid, yes_ask=m.yes_ask,
+                                             reason="LATE_CLOSE", stage="RISK_GATE")
                                 continue
                             if not dead and not args.allow_live_ball:
                                 n_gate["live_ball"] += 1
                                 funnel.block("live ball")
+                                decision_log(game=st.matchup_title, clock=st.clock_display, player=m.player_name, player_id=m.player_id,
+                                             stat=m.stat, line=m.line, ticker=m.ticker, side=side, phase=phase_now, period=st.period,
+                                             p_model=round(p_model,4), p_mkt=round(p_mkt,4), yes_bid=m.yes_bid, yes_ask=m.yes_ask,
+                                             reason="LIVE_BALL", stage="STATE_GATE")
                                 continue
-                            p_model = p_yes if side == "yes" else 1.0 - p_yes
                             if abs(p_model - p_mkt) > args.max_disagree:
                                 n_gate["disagree"] += 1
                                 funnel.block("disagreement > cap")
+                                decision_log(game=st.matchup_title, clock=st.clock_display, player=m.player_name, player_id=m.player_id,
+                                             stat=m.stat, line=m.line, ticker=m.ticker, side=side, phase=phase_now, period=st.period,
+                                             p_model=round(p_model,4), p_mkt=round(p_mkt,4), gap=round(abs(p_model-p_mkt),4),
+                                             yes_bid=m.yes_bid, yes_ask=m.yes_ask, reason="DISAGREEMENT_CAP", stage="MODEL_MARKET_GATE")
                                 continue
                             if abs(p_model - p_mkt) < args.min_gap:
                                 n_gate["small_gap"] += 1
                                 funnel.block("small gap")
+                                decision_log(game=st.matchup_title, clock=st.clock_display, player=m.player_name, player_id=m.player_id,
+                                             stat=m.stat, line=m.line, ticker=m.ticker, side=side, phase=phase_now, period=st.period,
+                                             p_model=round(p_model,4), p_mkt=round(p_mkt,4), gap=round(abs(p_model-p_mkt),4),
+                                             yes_bid=m.yes_bid, yes_ask=m.yes_ask, reason="SMALL_GAP", stage="MODEL_MARKET_GATE")
                                 continue
                             funnel.add("valid_gap")
                             if p_model <= p_mkt:
@@ -3025,18 +3057,30 @@ def main():
                             if w_m <= 0.0:
                                 n_gate["no_model_weight"] = n_gate.get("no_model_weight", 0) + 1
                                 funnel.block(f"no local authority ({auth['source']})")
+                                decision_log(game=st.matchup_title, clock=st.clock_display, player=m.player_name, player_id=m.player_id,
+                                             stat=m.stat, line=m.line, ticker=m.ticker, side=side, phase=phase_now, period=st.period,
+                                             p_model=round(p_model,4), p_mkt=round(p_mkt,4), authority_weight=w_m,
+                                             reason="NO_MODEL_AUTHORITY", stage="AUTHORITY_GATE")
                                 continue   # weight 0 = no authority for this cell: no fundamental directional entry
                             funnel.add("local_authority_nonzero")
                             tier = auth["tier"]
                             if tier == "RESEARCH" and run_is_live:
                                 n_gate["research_tier"] = n_gate.get("research_tier", 0) + 1
                                 funnel.block("RESEARCH tier (no live capital)")
+                                decision_log(game=st.matchup_title, clock=st.clock_display, player=m.player_name, player_id=m.player_id,
+                                             stat=m.stat, line=m.line, ticker=m.ticker, side=side, phase=phase_now, period=st.period,
+                                             p_model=round(p_model,4), p_mkt=round(p_mkt,4), tier=tier,
+                                             reason="RESEARCH_TIER", stage="AUTHORITY_GATE")
                                 continue
                             funnel.add("pilot_authority" if tier != "PRODUCTION" else "production_authority")
                             is_probe = False
                             if tier != "PRODUCTION" and side == "no":
                                 n_gate["pilot_yes_only"] = n_gate.get("pilot_yes_only", 0) + 1
                                 funnel.block("PILOT/RESEARCH: YES only")
+                                decision_log(game=st.matchup_title, clock=st.clock_display, player=m.player_name, player_id=m.player_id,
+                                             stat=m.stat, line=m.line, ticker=m.ticker, side=side, phase=phase_now, period=st.period,
+                                             p_model=round(p_model,4), p_mkt=round(p_mkt,4), tier=tier,
+                                             reason="YES_ONLY_POLICY", stage="POLICY_GATE")
                                 continue
                             if not side_on[side]:
                                 if side == "no" and probe_left > 0:
@@ -3054,6 +3098,10 @@ def main():
                             if p_bk is not None and p_bk < p_mkt:
                                 n_gate["books_disagree"] += 1
                                 funnel.block("sportsbooks disagree")
+                                decision_log(game=st.matchup_title, clock=st.clock_display, player=m.player_name, player_id=m.player_id,
+                                             stat=m.stat, line=m.line, ticker=m.ticker, side=side, phase=phase_now, period=st.period,
+                                             p_model=round(p_model,4), p_mkt=round(p_mkt,4), p_book=round(p_bk,4),
+                                             reason="SPORTSBOOK_DISAGREEMENT", stage="EXTERNAL_MARKET_GATE")
                                 continue
                             p_used = pool3(p_model, p_mkt, p_bk, w_m, w_b) + (dlt if side == "yes" else -dlt)
                             p_used = float(np.clip(p_used, 1e-4, 1 - 1e-4))
@@ -3080,6 +3128,11 @@ def main():
                                 n_gate[key_] = n_gate.get(key_, 0) + 1
                                 funnel.block("execution EV <= 0" if why_p == "execution_EV" else "edge / LCB")
                                 if why_p == "execution_EV" and res is not None:
+                                    decision_log(game=st.matchup_title, clock=st.clock_display, player=m.player_name, player_id=m.player_id,
+                                                 stat=m.stat, line=m.line, ticker=m.ticker, side=side, phase=phase_now, period=st.period,
+                                                 p_model=round(p_model,4), p_mkt=round(p_mkt,4), p_used=round(p_used,4),
+                                                 quote_price=res.get("px"), fee_c=res.get("fee"), exec_ev_c=res.get("qev"),
+                                                 reason="EXECUTION_EV_FILTER", stage="EXECUTION_GATE")
                                     elig_rows.append(dict(time=datetime.now().isoformat(timespec="seconds"), ticker=m.ticker,
                                                           game=st.matchup_title, player=m.player_name, stat=m.stat, line=m.line,
                                                           side=side, quote_price=res["px"], p_model=round(p_model, 4), p_mkt=round(p_mkt, 4),
@@ -3114,6 +3167,11 @@ def main():
                                 "authority_weight": w_m, "gap_bin": gap_bin_of_value(mc["gap_y"]), "fee_c": res["fee"], "ctx": ctx,
                                 "max_contracts": 1 if (res["arm"] != "base" or args.max_contracts == 1 or is_probe or tier != "PRODUCTION") else None}
                             cand["challenger_pf"], cand["challenger_qev"] = challenger_preds(ctx, bid, ask, res["px"], cand["alpha_c"], res["fee"])
+                            decision_log(game=st.matchup_title, clock=st.clock_display, player=m.player_name, player_id=m.player_id,
+                                         stat=m.stat, line=m.line, ticker=m.ticker, side=side, phase=phase_now, period=st.period,
+                                         p_model=round(p_model,4), p_mkt=round(p_mkt,4), p_used=round(p_used,4),
+                                         quote_price=res.get("px"), fee_c=res.get("fee"), exec_ev_c=res.get("qev"),
+                                         fill_prob=round(fill_prob,4), tier=tier, reason="ELIGIBLE", stage="ELIGIBLE")
                             candidates.append(cand)
                             mkt_of[(m.ticker, side)] = m
                             elig_rows.append(dict(time=datetime.now().isoformat(timespec="seconds"), ticker=m.ticker, game=st.matchup_title,
