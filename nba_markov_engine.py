@@ -117,6 +117,11 @@ class DTPlayerSkillProfile:
     depm: float
     epm: float
     p_start: Optional[float] = None   # D&T p_pct_start as a 0-1 probability (None = not supplied)
+    p_mp_unconditional: Optional[float] = None  # D&T p_mp_48: unconditional minutes expectation
+    p_mp_active: Optional[float] = None         # D&T p_mp_48_active: minutes conditional on active
+    p_active: Optional[float] = None            # availability probability, if supplied
+    p_played: Optional[float] = None            # probability of appearing, if supplied
+    pre_game_status: Optional[str] = None       # raw pre-game status; never conflated with p_active/p_played
 
     @property
     def role_archetype(self) -> str:
@@ -1291,6 +1296,17 @@ class DunksAndThreesClient:
         team_epm = pd.DataFrame(self._get("team-epm", {"date": date_str}))
         return epm_opt, box_preds, team_epm
 
+def _prob01(v) -> Optional[float]:
+    """Probability as 0-1 (accepts 0-1 or 0-100); None when missing/nonfinite."""
+    try:
+        x=float(v)
+    except (TypeError,ValueError):
+        return None
+    if not math.isfinite(x):
+        return None
+    return float(np.clip(x/100.0 if x>1.0 else x,0.0,1.0))
+
+
 def _pstart(v) -> Optional[float]:
     """D&T start probability as 0-1 (accepts 0-1 or 0-100); None when missing."""
     try:
@@ -1329,9 +1345,12 @@ def build_dt_rosters_and_fallback_lines(
                 if v is not None and not pd.isna(v):
                     return float(v)
             return 0.0
-        # A box row that says 0 minutes means 0 minutes; only fall back to /epm when the box has no value.
-        p_mp = _first(b_row.get("p_mp_48_active"), b_row.get("p_mp_48"), b_row.get("p_mp")) if b_row is not None and len(b_row) \
-            else _first(row.get("p_mp_48_active"), row.get("p_mp_48"))
+        # Preserve D&T semantics: unconditional minutes and active-conditional minutes are different quantities.
+        # For a live participant, p_mp uses the active-conditional prior. We never infer one by dividing by availability.
+        _has_box = b_row is not None and len(b_row)
+        p_mp_unconditional = _first(b_row.get("p_mp_48"), b_row.get("p_mp")) if _has_box else _first(row.get("p_mp_48"))
+        p_mp_active = _first(b_row.get("p_mp_48_active")) if _has_box else _first(row.get("p_mp_48_active"))
+        p_mp = p_mp_active if p_mp_active > 0 else p_mp_unconditional
         if p_mp < 1.0:   # simulation roster keeps fringe players; the trader decides who is tradeable
             continue
 
@@ -1359,7 +1378,12 @@ def build_dt_rosters_and_fallback_lines(
             p_ftpct=finite_or_default(row.get("p_ftpct"), 0.78),
             oepm=finite_or_default(row.get("oepm"), 0.0), depm=finite_or_default(row.get("depm"), 0.0),
             epm=finite_or_default(row.get("epm"), 0.0),
-            p_start=_pstart(b_row.get("p_pct_start") if b_row is not None and len(b_row) else row.get("p_pct_start"))
+            p_start=_pstart(b_row.get("p_pct_start") if _has_box else row.get("p_pct_start")),
+            p_mp_unconditional=p_mp_unconditional,
+            p_mp_active=p_mp_active,
+            p_active=_prob01(b_row.get("p_active") if _has_box else row.get("p_active")),
+            p_played=_prob01(b_row.get("p_played") if _has_box else row.get("p_played")),
+            pre_game_status=str(b_row.get("pre_game_status") or "") if _has_box else None
         ))
 
     return profiles, []
