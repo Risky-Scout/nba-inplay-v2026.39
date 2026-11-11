@@ -5,7 +5,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-QUOTE_POLICY = "qp7"
+QUOTE_POLICY = "qp8"
 BUCKETS = ("QTY1","QTY2_3","QTY4_6","QTY7PLUS")
 PILOT_LIMIT = {"QTY1":1,"QTY2_3":2,"QTY4_6":4,"QTY7PLUS":7}
 RULES = {
