@@ -25,43 +25,56 @@ def _num(d,c,default=0.0):
     return pd.to_numeric(d[c],errors="coerce").fillna(default)
 
 def capacity_report(here):
-    e=_read(here,"kalshi_eligible_*.csv")
-    q=_read(here,"kalshi_quotes_*.csv")
-    f=_read(here,"kalshi_fills_*.csv")
-    cfg=_latest_run_config(here)
-    base_br=float(cfg.get("bankroll",250.0) or 250.0)
+    """Observed-support capacity diagnostic.
+
+    This deliberately does NOT scale quantities with hypothetical bankroll. Capacity above observed action/size
+    support requires a chronological replay with simultaneous orders, queue state, reserved cash, partial fills
+    and the exact execution model. Until that exists, extrapolation is marked unsupported rather than guessed.
+    """
+    sources={
+        "eligible":_read(here,"kalshi_eligible_*.csv"),
+        "posted":_read(here,"kalshi_quotes_*.csv"),
+        "filled":_read(here,"kalshi_fills_*.csv"),
+    }
     rows=[]
-    def summarize(d,br,stage):
-        if d.empty:return 0.0
+    for stage,d in sources.items():
+        if d.empty:
+            rows.append(dict(stage=stage,observations=0,requested_contracts=0.0,
+                             expected_filled_contracts=0.0,expected_alpha_usd=0.0,
+                             max_observed_qty=0.0,bankroll_extrapolation_supported=False))
+            continue
+        if stage=="filled" and "mode" in d.columns:
+            d=d[d["mode"].astype(str).str.upper()=="LIVE"].copy()
         edge=_num(d,"cond_edge_c",np.nan)
-        if edge.isna().all(): edge=_num(d,"net_edge_c",0.0)
+        if edge.isna().all():edge=_num(d,"net_edge_c",0.0)
         edge=edge.fillna(0.0)
         qty=_num(d,"requested_qty",np.nan)
-        if qty.isna().all(): qty=_num(d,"count",1.0)
-        qty=qty.fillna(1.0).clip(lower=1)
-        # Diagnostic bankroll scale only. Liquidity penalizes fill fraction as size exceeds observed depth/queue.
-        qscaled=np.maximum(1.0,np.floor(qty*float(br)/max(base_br,1.0)))
+        if qty.isna().all():qty=_num(d,"count",np.nan)
+        if qty.isna().all():qty=_num(d,"contracts",1.0).abs()
+        qty=qty.fillna(1.0).clip(lower=0.0)
         frac=_num(d,"effective_fill_fraction",np.nan)
-        if frac.isna().all(): frac=_num(d,"fill_prob",1.0)
-        frac=frac.fillna(1.0).clip(0,1)
-        depth=_num(d,"qty_bid",np.nan)
-        if depth.isna().all(): depth=_num(d,"best_depth",np.nan)
-        qahead=_num(d,"queue_ahead",np.nan)
-        liq=np.ones(len(d))
-        m=depth.notna() & (depth>0); liq[m]=np.minimum(liq[m],(depth[m]/qscaled[m]).clip(upper=1.0))
-        m=qahead.notna() & (qahead>0); liq[m]=np.minimum(liq[m],(qahead[m]/qscaled[m]).clip(upper=1.0))
-        eq=qscaled*frac*liq
-        return float(np.sum(eq*edge/100.0))
-    for br in BANKROLLS:
-        rows.append(dict(bankroll=br,
-                         expected_alpha_generated_usd=summarize(e,br,"generated"),
-                         expected_alpha_posted_usd=summarize(q,br,"posted"),
-                         expected_alpha_filled_usd=summarize(f,br,"filled")))
+        if frac.isna().all():frac=_num(d,"fill_prob",np.nan)
+        if stage=="filled":
+            actual=_num(d,"contracts",np.nan).abs()
+            frac=np.where(qty.to_numpy()>0,np.minimum(1.0,actual.to_numpy()/np.maximum(qty.to_numpy(),1e-12)),0.0)
+            frac=pd.Series(frac,index=d.index)
+        else:
+            frac=frac.fillna(1.0).clip(0,1)
+        expq=qty*frac
+        rows.append(dict(
+            stage=stage,
+            observations=int(len(d)),
+            requested_contracts=float(qty.sum()),
+            expected_filled_contracts=float(expq.sum()),
+            expected_alpha_usd=float(np.sum(expq*edge/100.0)),
+            max_observed_qty=float(qty.max()) if len(qty) else 0.0,
+            bankroll_extrapolation_supported=False,
+            note="Observed action/size support only; no linear bankroll scaling."
+        ))
     out=pd.DataFrame(rows)
     date=datetime.now().strftime("%Y-%m-%d")
-    path=os.path.join(here,f"capacity_{date}.csv"); out.to_csv(path,index=False)
+    path=os.path.join(here,f"capacity_{date}.csv");out.to_csv(path,index=False)
     return path,out
-
 def settled_fills(here,settlements,mode="LIVE",entries_only=True):
     """Settled fill diagnostic. Actual-performance callers default to LIVE; PAPER is never silently mixed in."""
     f=_read(here,"kalshi_fills_*.csv")
