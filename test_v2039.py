@@ -12,6 +12,8 @@ from execution_size_authority import size_bucket, highest_authorized_qty
 from execution_hazard import cumulative_fill_probability, action_key
 from rotation_hazard import RotationHazardModel, pathwise_blowout_probability
 import residual_alpha as RA
+import risk_report as RR
+import endgame_state as ES
 from kalshi_ws import KalshiWSBook
 
 fails=[]
@@ -20,12 +22,31 @@ def ck(name,cond,detail=""):
     if not cond:fails.append(name)
 
 ck("versions",T.TRADER_VERSION=="v2026.39" and T.QUOTE_POLICY=="qp7" and FE.QUOTE_POLICY=="qp7" and GP.QUOTE_POLICY=="qp7" and MG.ENGINE_VERSION=="2026.29")
+ck("valid numeric zero is preserved", MG.finite_or_default(0.0,5.5)==0.0 and MG.finite_or_default(np.nan,5.5)==5.5)
+ck("drawdown includes starting equity", abs(RR._mdd([-10,-20])-20.0)<1e-12)
+ck("bonus does not infer last-two-minute fouls from period total", not ES.in_bonus(2,4,90,None))
+ck("explicit second last-two-minute foul triggers penalty", ES.in_bonus(2,4,90,2))
+ck("overtime uses lower period foul threshold", ES.in_bonus(4,5,180,None))
+
 for k in ("order_qty","qty_over_best_depth","qty_over_queue_ahead","log_order_qty"):
     ck("execution feature "+k,k in XM.EXEC_FEATURES)
 
 x1=XM.exec_features("yes","PTS",3,45,50,46,4,ttl_s=8,qty_bid=20,qty_ask=20,queue_ahead=20,order_qty=1,best_depth=20)
 x10=XM.exec_features("yes","PTS",3,45,50,46,4,ttl_s=8,qty_bid=20,qty_ask=20,queue_ahead=20,order_qty=10,best_depth=20)
 ck("quantity changes feature vector",not np.allclose(x1,x10))
+_n=len(XM.EXEC_FEATURES)
+_x=np.ones(_n)
+_m={"scaler":{"mean":[0.0]*_n,"sd":[1.0]*_n},
+    "fill_any":[3.0]+[0.0]*(_n-1),
+    "fill_fraction":[-3.0]+[0.0]*(_n-1),
+    "mark_all":[0.0]*_n}
+_qv=XM.quote_value(_m,_x,10.0,0.0)
+ck("quote EV uses expected fill fraction, not probability of any fill",
+   _qv["pf"]>0.9 and _qv["fill_fraction"]<0.1 and abs(_qv["qev"]-10.0*_qv["fill_fraction"])<1e-9,
+   str(_qv))
+ck("quote value exposes exact-request expected total value",
+   abs(_qv["qev_total"]-_qv["expected_filled_qty"]*10.0)<1e-9)
+
 
 with tempfile.TemporaryDirectory() as td:
     p=os.path.join(td,"old.json")
@@ -84,6 +105,23 @@ _role_eng=MG.InPlayMarkovEngine(_role_state,[prof],[MG.DTPlayerSkillProfile(2,"Q
 _role=_role_eng._calibrated_profile(prof)
 ck("live role posterior updates FTA/TOV opportunity rates",_role.p_fta_100!=prof.p_fta_100 and _role.p_tov_100!=prof.p_tov_100)
 ck("live role posterior never applies hot-hand FG adjustment",_role.p_fgpct_rim==prof.p_fgpct_rim and _role.p_fg3pct==prof.p_fg3pct)
+# Same player production and same on-court exposure; extra team possessions/minutes occur while he is benched.
+_s1=MG.LiveInPlayState("g","g","Q2 6:00",2,1800,1,2,"H","A",50,48,"HOME",[1],[],{
+    1:{"MIN":10.0,"FTA":4,"TOV":2}
+},pbp_context=MG.LivePBPContext(live_fta={1:4},live_tov={1:2}))
+_e1=MG.InPlayMarkovEngine(_s1,[prof],[MG.DTPlayerSkillProfile(2,"Q",2,3,78,210,100,32,.25,8,6,7,6,5,3,2,6,1,1,.65,.42,.36,.8,1,0,1)],0,0)
+_e1._aug_box={1:{"MIN":10.0,"FTA":4,"TOV":2,"_team_actions":20.0,"_team_minutes":50.0}}
+_r1=_e1._calibrated_profile(prof)
+_s2=MG.LiveInPlayState("g","g","Q2 6:00",2,1800,1,2,"H","A",50,48,"HOME",[],[],{
+    1:{"MIN":10.0,"FTA":4,"TOV":2}
+},pbp_context=MG.LivePBPContext(live_fta={1:4},live_tov={1:2}))
+_e2=MG.InPlayMarkovEngine(_s2,[prof],[MG.DTPlayerSkillProfile(2,"Q",2,3,78,210,100,32,.25,8,6,7,6,5,3,2,6,1,1,.65,.42,.36,.8,1,0,1)],0,0)
+_e2._aug_box={1:{"MIN":10.0,"FTA":4,"TOV":2,"_team_actions":40.0,"_team_minutes":100.0}}
+_r2=_e2._calibrated_profile(prof)
+ck("bench possessions do not dilute a player's live FTA/TOV rate",
+   abs(_r1.p_fta_100-_r2.p_fta_100)<1e-12 and abs(_r1.p_tov_100-_r2.p_tov_100)<1e-12,
+   f"{_r1.p_fta_100:.4f}/{_r2.p_fta_100:.4f}, {_r1.p_tov_100:.4f}/{_r2.p_tov_100:.4f}")
+
 ck("legacy post calibration disabled by default",eng.legacy_post_calibration is False)
 
 X=np.zeros((2,len(RA.FEATURES))); p=np.array([.3,.6])
