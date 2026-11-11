@@ -26,6 +26,17 @@ def ck(name,cond,detail=""):
 
 ck("versions",T.TRADER_VERSION=="v2026.39" and T.QUOTE_POLICY=="qp7" and FE.QUOTE_POLICY=="qp7" and GP.QUOTE_POLICY=="qp7" and MG.ENGINE_VERSION=="2026.29")
 ck("valid numeric zero is preserved", MG.finite_or_default(0.0,5.5)==0.0 and MG.finite_or_default(np.nan,5.5)==5.5)
+_epm=pd.DataFrame([{"team_id":1,"player_id":77,"player_name":"Semantic Test","p_mp_48":20.0,
+    "p_mp_48_active":30.0,"p_active":.6,"p_played":.5,"p_usg":.2}])
+_box=pd.DataFrame([{"team_id":1,"player_id":77,"p_mp_48":20.0,"p_mp_48_active":30.0,
+    "p_active":.6,"p_played":.5,"p_pct_start":25.0,"pre_game_status":"Questionable","position":"G"}])
+_sem,_=MG.build_dt_rosters_and_fallback_lines(_epm,_box,1)
+_sem=_sem[0]
+ck("D&T minutes and availability semantics stay distinct",
+   _sem.p_mp==30.0 and _sem.p_mp_active==30.0 and _sem.p_mp_unconditional==20.0
+   and abs(_sem.p_active-.6)<1e-12 and abs(_sem.p_played-.5)<1e-12
+   and _sem.pre_game_status=="Questionable")
+
 ck("drawdown includes starting equity", abs(RR._mdd([-10,-20])-20.0)<1e-12)
 ck("bonus does not infer last-two-minute fouls from period total", not ES.in_bonus(2,4,90,None))
 ck("explicit second last-two-minute foul triggers penalty", ES.in_bonus(2,4,90,2))
