@@ -66,6 +66,17 @@ NBA_HEADERS = {
     "Origin": "https://www.nba.com"
 }
 
+def finite_or_default(value, default: float) -> float:
+    """Return default only for missing/non-finite numeric input; preserve legitimate zero values."""
+    try:
+        if value is None or pd.isna(value):
+            return float(default)
+        out = float(value)
+        return out if math.isfinite(out) else float(default)
+    except Exception:
+        return float(default)
+
+
 def normalize_player_name(name: str) -> str:
     if not name:
         return ""
@@ -749,18 +760,27 @@ class InPlayMarkovEngine:
         orb = max(0.0, p.p_orb_100 * m_reb)
         drb = max(0.0, p.p_drb_100 * m_reb)
         pbp = self.state.pbp_context
-        box = self.state.live_box.get(p.player_id, {})
-        team_poss = float(box.get("_team_actions", 0.0) or 0.0)
-        if team_poss > 0:
-            obs_fta = float(pbp.live_fta.get(p.player_id, box.get("FTA", 0)) or 0.0) * 100.0 / team_poss
-            obs_tov = float(pbp.live_tov.get(p.player_id, box.get("TOV", 0)) or 0.0) * 100.0 / team_poss
-            fta = (FTA_ALPHA * fta + team_poss * obs_fta) / (FTA_ALPHA + team_poss)
-            tov = (TOV_ALPHA * tov + team_poss * obs_tov) / (TOV_ALPHA + team_poss)
+        live_box = getattr(self, "_aug_box", None) or self.state.live_box
+        box = live_box.get(p.player_id, {})
+        # Exposure must correspond to possessions while THIS player was on court.  _aug_box stores team
+        # actions/minutes; under a uniform-within-stint approximation player exposure is team actions times
+        # the player's share of elapsed team floor-time.  This prevents bench possessions from diluting rates.
+        team_actions = finite_or_default(box.get("_team_actions"), 0.0)
+        team_minutes = finite_or_default(box.get("_team_minutes"), 0.0)
+        player_minutes = max(0.0, finite_or_default(box.get("MIN"), 0.0))
+        elapsed_team_minutes = team_minutes / 5.0 if team_minutes > 0 else 0.0
+        player_poss = team_actions * min(1.0, player_minutes / elapsed_team_minutes) if elapsed_team_minutes > 0 else 0.0
+        if player_poss > 0:
+            obs_fta = finite_or_default(pbp.live_fta.get(p.player_id, box.get("FTA", 0)), 0.0) * 100.0 / player_poss
+            obs_tov = finite_or_default(pbp.live_tov.get(p.player_id, box.get("TOV", 0)), 0.0) * 100.0 / player_poss
+            fta = (FTA_ALPHA * fta + player_poss * obs_fta) / (FTA_ALPHA + player_poss)
+            tov = (TOV_ALPHA * tov + player_poss * obs_tov) / (TOV_ALPHA + player_poss)
         team_roster = self.home_roster if p.team_id == self.state.home_team_id else self.away_roster
         orb_total = sum(max(0.2, q.p_orb_100 * float(np.clip(self.calib.get(q.player_id, {}).get("REB", 1.0), *CALIB_TRUST))) for q in team_roster)
         drb_total = sum(max(0.8, q.p_drb_100 * float(np.clip(self.calib.get(q.player_id, {}).get("REB", 1.0), *CALIB_TRUST))) for q in team_roster)
-        oo = float(pbp.live_orb_opportunities.get(p.team_id, 0) or 0.0)
-        do = float(pbp.live_drb_opportunities.get(p.team_id, 0) or 0.0)
+        on_court_share = min(1.0, player_minutes / elapsed_team_minutes) if elapsed_team_minutes > 0 else 0.0
+        oo = finite_or_default(pbp.live_orb_opportunities.get(p.team_id, 0), 0.0) * on_court_share
+        do = finite_or_default(pbp.live_drb_opportunities.get(p.team_id, 0), 0.0) * on_court_share
         if oo > 0 and orb_total > 0:
             prior_share = orb / orb_total
             post_share = (ORB_ALPHA * prior_share + float(pbp.live_orb.get(p.player_id, box.get("ORB", 0)) or 0.0)) / (ORB_ALPHA + oo)
@@ -1322,23 +1342,23 @@ def build_dt_rosters_and_fallback_lines(
             player_id=pid, player_name=str(row["player_name"]), team_id=team_id,
             position_code=pos_map.get(pos_str, 3), inches=int(b_row.get("inches", 78) or 78),
             weight=float(b_row.get("weight", 215.0) or 215.0), p_pace=p_pace,
-            p_mp=p_mp, p_usg=float(row.get("p_usg", 0.20) or 0.20),
-            p_fga_rim_100=float(row.get("p_fga_rim_100", 5.0) or 5.0),
-            p_fga_mid_100=float(row.get("p_fga_mid_100", 3.0) or 3.0),
-            p_fg3a_100=float(row.get("p_fg3a_100", 5.5) or 5.5),
-            p_fta_100=float(row.get("p_fta_100", 4.0) or 4.0),
-            p_ast_100=float(row.get("p_ast_100", 4.5) or 4.5),
-            p_tov_100=float(row.get("p_tov_100", 2.5) or 2.5),
-            p_orb_100=float(row.get("p_orb_100", 1.5) or 1.5),
-            p_drb_100=float(row.get("p_drb_100", 5.5) or 5.5),
-            p_stl_100=float(row.get("p_stl_100", 1.3) or 1.3),
-            p_blk_100=float(row.get("p_blk_100", 0.8) or 0.8),
-            p_fgpct_rim=float(row.get("p_fgpct_rim", 0.64) or 0.64),
-            p_fgpct_mid=float(row.get("p_fgpct_mid", 0.41) or 0.41),
-            p_fg3pct=float(row.get("p_fg3pct", 0.36) or 0.36),
-            p_ftpct=float(row.get("p_ftpct", 0.78) or 0.78),
-            oepm=float(row.get("oepm", 0.0) or 0.0), depm=float(row.get("depm", 0.0) or 0.0),
-            epm=float(row.get("epm", 0.0) or 0.0),
+            p_mp=p_mp, p_usg=finite_or_default(row.get("p_usg"), 0.20),
+            p_fga_rim_100=finite_or_default(row.get("p_fga_rim_100"), 5.0),
+            p_fga_mid_100=finite_or_default(row.get("p_fga_mid_100"), 3.0),
+            p_fg3a_100=finite_or_default(row.get("p_fg3a_100"), 5.5),
+            p_fta_100=finite_or_default(row.get("p_fta_100"), 4.0),
+            p_ast_100=finite_or_default(row.get("p_ast_100"), 4.5),
+            p_tov_100=finite_or_default(row.get("p_tov_100"), 2.5),
+            p_orb_100=finite_or_default(row.get("p_orb_100"), 1.5),
+            p_drb_100=finite_or_default(row.get("p_drb_100"), 5.5),
+            p_stl_100=finite_or_default(row.get("p_stl_100"), 1.3),
+            p_blk_100=finite_or_default(row.get("p_blk_100"), 0.8),
+            p_fgpct_rim=finite_or_default(row.get("p_fgpct_rim"), 0.64),
+            p_fgpct_mid=finite_or_default(row.get("p_fgpct_mid"), 0.41),
+            p_fg3pct=finite_or_default(row.get("p_fg3pct"), 0.36),
+            p_ftpct=finite_or_default(row.get("p_ftpct"), 0.78),
+            oepm=finite_or_default(row.get("oepm"), 0.0), depm=finite_or_default(row.get("depm"), 0.0),
+            epm=finite_or_default(row.get("epm"), 0.0),
             p_start=_pstart(b_row.get("p_pct_start") if b_row is not None and len(b_row) else row.get("p_pct_start"))
         ))
 
