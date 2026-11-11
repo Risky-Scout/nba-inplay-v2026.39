@@ -122,10 +122,10 @@ if not os.path.exists(KALSHI_PEM_PATH):
 
 QUOTE_MAX_AGE = 75   # seconds a resting quote may live before it is refreshed (overridden by --quote-ttl at startup)
 PENDING_CHECKS = 4   # cycles a cancelled order stays watched for late fills (~1 min)
-TRADER_VERSION = "v2026.39"
+TRADER_VERSION = "v2026.40"
 RUN_ID = datetime.now().strftime("%Y%m%d_%H%M%S")           # joins every log row to its run_config_<RUN_ID>.json
 POLICY = {"policy_id": "unset", "policy_family_id": "unset", "exec_model_id": "none", "exec_prior_id": "none"}   # set in main
-QUOTE_POLICY = "qp7"   # v2026.37: base quote bid+1 (join when toxic / NO), or argmax LCB[P(fill) x (alpha + execution
+QUOTE_POLICY = "qp8"   # v2026.37: base quote bid+1 (join when toxic / NO), or argmax LCB[P(fill) x (alpha + execution
                        # residual - fee)] over the maker ladder once a CHAMPION execution model is promoted; the quote is
                        # re-optimized on the final fresh book; exploration +/-1c arms (own predictions, logged propensity)
                        # decay with execution-model uncertainty; fill-aware QP; WS market-clock fast cancels
