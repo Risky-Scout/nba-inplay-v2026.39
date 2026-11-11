@@ -38,7 +38,7 @@ from kalshi_exec_model import EXEC_FEATURES, exec_features
 from execution_hazard import action_key
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-QUOTE_POLICY = "qp7"
+QUOTE_POLICY = "qp8"
 MIN_QUOTES, MIN_FILLS, MIN_MARKS, MIN_VAL_FILLS, MIN_DATES = 300, 40, 30, 10, 2
 L2 = 1.0
 N_BOOT = 30
