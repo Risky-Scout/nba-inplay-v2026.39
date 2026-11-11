@@ -51,7 +51,8 @@ import inspect
 import requests
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
+from zoneinfo import ZoneInfo, timedelta
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 
@@ -154,6 +155,7 @@ DEAD_BALL = {"timeout", "substitution", "period", "freethrow", "instantreplay", 
 SERIES_STAT = {"KXNBAPTS": "PTS", "KXNBAREB": "REB", "KXNBAAST": "AST", "KXNBA3PT": "3PM", "KXNBAPRA": "PRA"}
 KALSHI_SERIES = list(SERIES_STAT)
 TODAY_STR = datetime.now().strftime("%Y-%m-%d")
+NY_TZ = ZoneInfo("America/New_York")
 LEDGER_CSV = os.path.join(CURRENT_DIR, f"kalshi_fills_{TODAY_STR}.csv")
 PRED_LOG = os.path.join(CURRENT_DIR, f"kalshi_predictions_{TODAY_STR}.csv")
 MARKOUT_CSV = os.path.join(CURRENT_DIR, f"kalshi_markouts_{TODAY_STR}.csv")
@@ -683,7 +685,7 @@ def drop_contradictions(cands: List[dict], positions: Dict[Tuple[str, str], dict
             continue
         kept.append(c)
     return kept, dropped
-LEDGER_COLS = ["timestamp", "mode", "order_id", "fill_id", "ticker", "game", "player", "stat", "line", "side",
+LEDGER_COLS = ["timestamp", "trade_date_ny", "mode", "order_id", "fill_id", "ticker", "game", "player", "stat", "line", "side",
                "order_type", "price_cents", "fee_usd", "contracts", "cost_usd", "p_model", "p_mkt", "p_used",
                "ev_pct", "joint_kelly_pct", "engine", "trader", "run_id", "quote_policy", "policy_id", "policy_family_id",
                "exec_model_id", "exec_prior_id", "arm", "tier", "confidence", "cell", "team_id", "fill_prob", "cond_edge_c"]
@@ -1423,7 +1425,8 @@ class OrderBook:
         if d["contracts"] <= 1e-9:
             self.positions.pop(key, None)
         ledger_append({
-            "timestamp": datetime.now().isoformat(), "mode": mode, "order_id": order_id, "fill_id": fill_id,
+            "timestamp": datetime.now(NY_TZ).isoformat(), "trade_date_ny": datetime.now(NY_TZ).strftime("%Y-%m-%d"),
+            "mode": mode, "order_id": order_id, "fill_id": fill_id,
             "ticker": bet["ticker"], "game": bet["game_key"], "player": bet["player_name"], "stat": bet["stat"],
             "line": bet["line"], "side": bet["side"], "order_type": "MAKER" if bet["is_maker"] else "TAKER",
             "price_cents": round(price_cents, 2), "fee_usd": round(fee_usd, 4), "contracts": contracts,
