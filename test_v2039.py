@@ -15,6 +15,8 @@ import residual_alpha as RA
 import fit_residual_alpha as FRA
 import risk_report as RR
 import endgame_state as ES
+import hiring_manager_audit as HMA
+import nightly_reports as NR
 from kalshi_ws import KalshiWSBook
 
 fails=[]
@@ -28,6 +30,37 @@ ck("drawdown includes starting equity", abs(RR._mdd([-10,-20])-20.0)<1e-12)
 ck("bonus does not infer last-two-minute fouls from period total", not ES.in_bonus(2,4,90,None))
 ck("explicit second last-two-minute foul triggers penalty", ES.in_bonus(2,4,90,2))
 ck("overtime uses lower period foul threshold", ES.in_bonus(4,5,180,None))
+
+
+# Audit estimands: ticker A is repeated 10x and bad; ticker B is one row and good.
+_ad=pd.DataFrame({
+    "ticker":["A"]*10+["B"],"game":["g1"]*10+["g2"],
+    "timestamp":[f"2026-11-01T19:00:{i:02d}" for i in range(10)]+["2026-11-02T20:00:00"],
+    "phase":["Q2"]*11,
+    "p_dir":[.9]*10+[.9],"p_mkt_dir":[.5]*11,"y_dir":[0.0]*10+[1.0]
+})
+_views=HMA._paired_loss_views(_ad)
+_md=_views["Market Loss Detail"]
+_expected_market_brier=float(_md["model_brier"].mean())
+_timestamp_brier=float(((_ad.p_dir-_ad.y_dir)**2).mean())
+ck("equal-weighted market audit averages losses within ticker before equal weighting",
+   abs(float(_views["Equal Weighted Markets"].iloc[0]["Model_Brier"])-_expected_market_brier)<1e-12
+   and abs(_expected_market_brier-_timestamp_brier)>1e-3)
+ck("phase snapshot audit keeps first forecast per ticker-phase",
+   int(_views["Phase Snapshots"].iloc[0]["N"])==2)
+ck("date-block audit preserves whole trading dates",
+   int(_views["Date Block Summary"].iloc[0]["N_dates"])==2)
+
+
+with tempfile.TemporaryDirectory() as _ld:
+    pd.DataFrame([
+      {"timestamp":"2026-11-11T10:00:00-05:00","trade_date_ny":"2026-11-11","mode":"LIVE","ticker":"T","side":"yes","contracts":2,"price_cents":40,"fee_usd":0},
+      {"timestamp":"2026-11-11T10:10:00-05:00","trade_date_ny":"2026-11-11","mode":"LIVE","ticker":"T","side":"yes","contracts":-1,"price_cents":60,"fee_usd":0},
+      {"timestamp":"2026-11-11T10:20:00-05:00","trade_date_ny":"2026-11-11","mode":"PAPER","ticker":"T","side":"yes","contracts":99,"price_cents":1,"fee_usd":0},
+    ]).to_csv(os.path.join(_ld,"kalshi_fills_2026-11-11.csv"),index=False)
+    _lp,_lo=NR.account_ledger_report(_ld,{"T":"yes"})
+    ck("account ledger excludes PAPER rows",_lo.get("live_fill_rows")==2)
+    ck("account ledger includes signed exit cash flow and settlement",abs(_lo.get("trading_equity_after_settlement_usd",999)-.8)<1e-12,str(_lo))
 
 for k in ("order_qty","qty_over_best_depth","qty_over_queue_ahead","log_order_qty"):
     ck("execution feature "+k,k in XM.EXEC_FEATURES)
