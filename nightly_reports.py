@@ -62,10 +62,15 @@ def capacity_report(here):
     path=os.path.join(here,f"capacity_{date}.csv"); out.to_csv(path,index=False)
     return path,out
 
-def settled_fills(here,settlements):
+def settled_fills(here,settlements,mode="LIVE",entries_only=True):
+    """Settled fill diagnostic. Actual-performance callers default to LIVE; PAPER is never silently mixed in."""
     f=_read(here,"kalshi_fills_*.csv")
     if f.empty:return f
-    f=f[_num(f,"contracts",0)>0].copy()
+    if mode is not None:
+        if "mode" not in f.columns:return f.iloc[0:0].copy()
+        f=f[f["mode"].astype(str).str.upper()==str(mode).upper()].copy()
+    if entries_only:
+        f=f[_num(f,"contracts",0)>0].copy()
     f["result"]=f["ticker"].astype(str).map(settlements)
     f=f[f.result.isin(["yes","no"])].copy()
     if f.empty:return f
@@ -77,8 +82,72 @@ def settled_fills(here,settlements):
     f["game_tok"]=f["ticker"].astype(str).str.split("-").str[1]
     return f
 
+def account_ledger_report(here,settlements):
+    """Canonical trading-only LIVE ledger from signed fills.
+
+    Buys are negative cash flow; exits are positive proceeds less actual logged fees; remaining inventory is
+    settled from the exchange result. Transfers are intentionally absent because the fill log does not contain
+    deposits/withdrawals; this report therefore never claims to be a full brokerage statement.
+    """
+    f=_read(here,"kalshi_fills_*.csv")
+    if f.empty:return None,{}
+    if "mode" not in f.columns:
+        return None,{"status":"NO_MODE_COLUMN","note":"Cannot classify LIVE vs PAPER safely."}
+    f=f[f["mode"].astype(str).str.upper()=="LIVE"].copy()
+    if f.empty:return None,{"status":"NO_LIVE_FILLS"}
+    f["_ts"]=pd.to_datetime(f.get("timestamp",pd.Series("",index=f.index)),errors="coerce")
+    f=f.sort_values("_ts",kind="mergesort")
+    f["contracts"]=_num(f,"contracts",0.0)
+    f["price_cents"]=_num(f,"price_cents",0.0)
+    f["fee_usd"]=_num(f,"fee_usd",0.0)
+    f["signed_cash_flow_usd"]=-(f["contracts"]*f["price_cents"]/100.0+f["fee_usd"])
+
+    positions={}
+    realized_exit=0.0
+    for r in f.itertuples():
+        key=(str(r.ticker),str(r.side))
+        p=positions.setdefault(key,{"contracts":0.0,"basis":0.0})
+        q=float(r.contracts); px=float(r.price_cents)/100.0; fee=float(r.fee_usd)
+        if q>0:
+            p["contracts"]+=q; p["basis"]+=q*px+fee
+        elif q<0:
+            sold=min(-q,p["contracts"])
+            avg=p["basis"]/p["contracts"] if p["contracts"]>1e-12 else 0.0
+            removed=avg*sold
+            realized_exit+=sold*px-fee-removed
+            p["contracts"]-=sold; p["basis"]=max(0.0,p["basis"]-removed)
+
+    settlement_cash=0.0; unsettled_notional=0.0; open_basis=0.0
+    for (ticker,side),p in positions.items():
+        if p["contracts"]<=1e-12:continue
+        open_basis+=p["basis"]
+        result=settlements.get(ticker)
+        if result in ("yes","no"):
+            win=(result==side)
+            settlement_cash+=p["contracts"]*(1.0 if win else 0.0)
+        else:
+            unsettled_notional+=p["contracts"]
+    trading_cash=float(f["signed_cash_flow_usd"].sum())
+    settled_equity=trading_cash+settlement_cash
+    out={
+        "status":"OK",
+        "live_fill_rows":int(len(f)),
+        "signed_fill_cash_flow_usd":trading_cash,
+        "realized_exit_pnl_usd":float(realized_exit),
+        "open_cost_basis_usd":float(open_basis),
+        "settlement_cash_usd":float(settlement_cash),
+        "trading_equity_after_settlement_usd":float(settled_equity),
+        "unsettled_open_contracts":float(unsettled_notional),
+        "scope":"LIVE trading fills only; deposits/withdrawals/rebates outside fill rows not included",
+    }
+    date=datetime.now().strftime("%Y-%m-%d")
+    path=os.path.join(here,f"account_ledger_{date}.json")
+    json.dump(out,open(path,"w"),indent=2)
+    return path,out
+
+
 def pnl_attribution_report(here,settlements):
-    f=settled_fills(here,settlements)
+    f=settled_fills(here,settlements,mode="LIVE",entries_only=True)
     if f.empty:return None,pd.DataFrame()
     m=_read(here,"kalshi_markouts_*.csv")
     if not m.empty and "order_id" in m and "m30" in m:
@@ -113,7 +182,7 @@ def pnl_attribution_report(here,settlements):
     return path,agg
 
 def risk_report(here,settlements,bankroll):
-    f=settled_fills(here,settlements)
+    f=settled_fills(here,settlements,mode="LIVE",entries_only=True)
     if f.empty:return None,{}
     f["pnl_usd"]=f["realized_net_c"]*_num(f,"contracts",1.0)/100.0
     blocks=f.groupby(["day","game_tok"],dropna=False)["pnl_usd"].sum().reset_index()
@@ -149,5 +218,6 @@ def risk_report(here,settlements,bankroll):
 
 def write_all(here,settlements):
     cfg=_latest_run_config(here); br=float(cfg.get("bankroll",250.0) or 250.0)
-    cp,_=capacity_report(here); pp,_=pnl_attribution_report(here,settlements); rp,_=risk_report(here,settlements,br)
-    return {"capacity":cp,"pnl_attribution":pp,"risk_report":rp}
+    cp,_=capacity_report(here); ap,_=account_ledger_report(here,settlements)
+    pp,_=pnl_attribution_report(here,settlements); rp,_=risk_report(here,settlements,br)
+    return {"capacity":cp,"account_ledger":ap,"pnl_attribution":pp,"risk_report":rp}
