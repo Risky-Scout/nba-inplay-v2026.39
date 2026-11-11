@@ -29,7 +29,7 @@ from execution_size_authority import write_authority, size_bucket
 from nightly_reports import write_all as write_nightly_reports
 
 GATE_MARKETS, GATE_EDGE_C, GATE_GAMES = 300, 2.0, 15
-QUOTE_POLICY = "qp7"   # must match kalshi_nba_inplay_trader.QUOTE_POLICY: priors learned under another policy are not reused
+QUOTE_POLICY = "qp8"   # must match kalshi_nba_inplay_trader.QUOTE_POLICY: priors learned under another policy are not reused
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
