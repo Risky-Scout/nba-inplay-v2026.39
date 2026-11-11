@@ -44,6 +44,28 @@ The same probability engine, market parser, execution economics, portfolio optim
 
 See [LIVE_REVIEW_DATA_POLICY.md](LIVE_REVIEW_DATA_POLICY.md) for provenance and safety details.
 
+## Reviewer audit after settlement
+
+After the live review, the hiring manager can generate an evidence package:
+
+```bash
+./scripts/run_hiring_manager_audit.sh
+```
+
+It reports:
+
+- model vs market Brier score and log loss;
+- calibration by stat, proposed OVER/UNDER directive, and game phase;
+- every timestamp-valid eligible decision;
+- which opportunities were actually quoted;
+- profitable **and losing** missed opportunities;
+- counterfactual one-contract P&L at the logged quote price;
+- gate attribution showing whether rejected opportunities would have helped or hurt.
+
+Headline opportunity economics use the first eligible observation per ticker/side to prevent repeated polling from inflating the sample.
+
+See [HIRING_MANAGER_GUIDE.md](HIRING_MANAGER_GUIDE.md) for interpretation.
+
 ## What this project demonstrates
 
 - live player-prop probability estimation
