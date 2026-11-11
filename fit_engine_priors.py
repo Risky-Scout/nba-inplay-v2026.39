@@ -1,7 +1,7 @@
-"""Nested chronological selection scaffold for engine 2026.29 live-information priors."""
+"""Nested chronological selection scaffold for engine 2026.30 live-information priors."""
 from datetime import datetime
 import numpy as np
-ENGINE_VERSION="2026.29"
+ENGINE_VERSION="2026.30"
 CANDIDATES={"SHOT_MIX_KAPPA":[6,10,15,20,30,45],"ASSIST_ALPHA":[6,10,15,20,30,45],
 "PACE_TAU0":[20,30,45,60,90,120],"MINUTES_EVIDENCE_K":[5,7.5,10,15,20,30],
 "FTA_ALPHA":[8,12,20,30,45],"TOV_ALPHA":[8,12,20,30,45],"ORB_ALPHA":[8,12,20,30,45],"DRB_ALPHA":[8,12,20,30,45]}
