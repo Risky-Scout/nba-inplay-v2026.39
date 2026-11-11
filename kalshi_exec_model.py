@@ -106,11 +106,18 @@ def quote_value(model: dict, x_raw: np.ndarray, alpha_c: float, fee_c: float, z:
         direct_filled_qty = float(np.clip(np.asarray(model["filled_qty"], float) @ xs, 0.0, qty_raw))
     else:
         direct_filled_qty = expected_filled_qty
-    qev = pf * (alpha_c + em - fee_c)
-    use = slice(1, None) if k > 1 else slice(0, 1)            # draws for the spread, the point estimate for the mean
+    # Economic value is per REQUESTED contract, so partial-fill fraction—not probability of any fill—is
+    # the correct multiplier. Also expose total expected value for the exact requested quantity.
+    edge_draw = alpha_c + em - fee_c
+    qev = pfrac * edge_draw
+    qev_total = expected_filled_qty * edge_draw
+    use = slice(1, None) if k > 1 else slice(0, 1)
     sd = float(np.std(qev[use], ddof=1)) if k > 2 else 0.0
-    return dict(pf=float(pf[0]), fill_fraction=pfrac, expected_filled_qty=expected_filled_qty, direct_filled_qty=direct_filled_qty, em=float(em[0]), qev=float(qev[0]), qev_sd=sd, qev_lcb=float(qev[0]) - z * sd,
-                pf_sd=float(np.std(pf[use], ddof=1)) if k > 2 else 0.0, em_sd=float(np.std(em[use], ddof=1)) if k > 2 else 0.0)
+    return dict(pf=float(pf[0]), fill_fraction=pfrac, expected_filled_qty=expected_filled_qty,
+                direct_filled_qty=direct_filled_qty, em=float(em[0]), qev=float(qev[0]),
+                qev_total=float(qev_total[0]), qev_sd=sd, qev_lcb=float(qev[0]) - z * sd,
+                pf_sd=float(np.std(pf[use], ddof=1)) if k > 2 else 0.0,
+                em_sd=float(np.std(em[use], ddof=1)) if k > 2 else 0.0)
 
 
 def quote_ev_c(model: dict, x: np.ndarray, alpha_c: float, fee_c: float) -> Tuple[float, float, float]:
