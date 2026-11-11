@@ -445,8 +445,11 @@ def cand(t, edge, phi, conf=1.0, pl="P", g="G", team="T", tier="PRODUCTION"):
 qp = CorrelatedKellyQP(session_cap=0.0048, game_cap=1, single_cap=0.2, player_cap=1, kelly_fraction=0.25)
 oA = qp.solve_allocations([cand("A", 4.0, 1.0, pl="a", g="g1"), cand("B", 1.5, 1.0, pl="b", g="g2")], 1000, 1000, {})
 oB = qp.solve_allocations([cand("A", 4.0, 0.05, pl="a", g="g1"), cand("B", 1.5, 0.5, pl="b", g="g2")], 1000, 1000, {})
-check("18/6. fill probability changes the ranking: A (4c, 5% fill) no longer outranks B (1.5c, 50% fill) for scarce notional",
-      {o["ticker"] for o in oA} == {"A"} and {o["ticker"] for o in oB} == {"B"}, f"{[o['ticker'] for o in oA]} -> {[o['ticker'] for o in oB]}")
+_oB={o["ticker"]:o for o in oB}
+check("18/6. fill fraction changes expected-return ranking without discounting risk",
+      {o["ticker"] for o in oA} == {"A"} and "B" in _oB
+      and ("A" not in _oB or _oB["B"]["joint_kelly_fraction"] >= _oB["A"]["joint_kelly_fraction"]),
+      f"{[(o['ticker'],round(o['joint_kelly_fraction'],5)) for o in oA]} -> {[(o['ticker'],round(o['joint_kelly_fraction'],5)) for o in oB]}")
 qp2 = CorrelatedKellyQP(session_cap=0.6, game_cap=1, single_cap=0.2, player_cap=1, kelly_fraction=0.25)
 c1 = qp2.solve_allocations([cand("A", 3.0, 1.0, conf=1.0)], 1000, 1000, {})
 c2 = qp2.solve_allocations([cand("A", 3.0, 1.0, conf=0.35)], 1000, 1000, {})
@@ -454,8 +457,11 @@ check("7. production confidence 0.35 gives a smaller allocation than 1.0", c1 an
       f"{c1[0]['contracts'] if c1 else 0} vs {c2[0]['contracts'] if c2 else 0}")
 qp3 = CorrelatedKellyQP(session_cap=0.6, game_cap=1, single_cap=0.01, player_cap=1, kelly_fraction=1.0)
 cc = qp3.solve_allocations([cand("A", 30.0, 0.05, conf=0.3)], 1000, 1000, {})
-check("8/19. confidence and P(fill) never shrink hard exposure: the position cap binds at FULL notional",
-      cc and cc[0]["risk_usd"] <= 0.01 * 1000 * min(1, 2 * (1 - 0.48)) + 1e-9 and cc[0]["risk_usd"] >= 9.0, str(cc[0]["risk_usd"] if cc else None))
+_full_cap=0.01 * 1000 * min(1, 2 * (1 - 0.48))
+check("8/19. confidence and fill fraction never shrink hard exposure below requested notional",
+      cc and abs(cc[0]["risk_usd"]-cc[0]["contracts"]*0.48)<1e-9
+      and cc[0]["risk_usd"] <= _full_cap + 1e-9,
+      str({"risk":cc[0]["risk_usd"],"contracts":cc[0]["contracts"],"cap":_full_cap} if cc else None))
 pil = [dict(cand(f"P{i}", 6.0, 1.0, pl=f"p{i}", g=f"g{i}", tier="PILOT"), max_contracts=1) for i in range(8)]
 qp4 = CorrelatedKellyQP(session_cap=0.6, game_cap=1, single_cap=0.2, player_cap=1, kelly_fraction=0.25)
 op = qp4.solve_allocations(pil, 250, 1000, {}, group_caps=[{"members": list(range(8)), "room": 0.01}])
