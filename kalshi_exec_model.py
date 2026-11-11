@@ -1,4 +1,4 @@
-"""Execution model shared by the trader and fit_execution.py (v2026.39 / qp7): ONE feature definition and ONE scoring path, so
+"""Execution model shared by the trader and fit_execution.py (v2026.40 / qp8): ONE feature definition and ONE scoring path, so
 a model is always scored on exactly the features, and the training-only scaler, it was fitted with.
 
 Model objects (champion_exec_model.json / challenger_exec_model.json):
