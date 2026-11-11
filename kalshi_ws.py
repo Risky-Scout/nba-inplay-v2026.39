@@ -25,8 +25,14 @@ WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"   # production host 
 WS_PATH = "/trade-api/ws/v2"
 
 
-def _cents(x) -> int:
-    return int(round(float(x) * 100.0))
+def _cents_exact(x):
+    """Convert a dollar price to integer cents only when exactly cent-representable.
+
+    Fractional-cent markets must be rejected by the current cent-based trader rather than silently rounded.
+    """
+    v=float(x)*100.0
+    r=round(v)
+    return int(r) if abs(v-r)<=1e-9 else None
 
 
 class KalshiWSBook:
@@ -49,6 +55,7 @@ class KalshiWSBook:
         self.on_update: Optional[Callable[[str], None]] = None
         self.hist: Dict[str, deque] = {}
         self.queue_tracks: Dict[str, dict] = {}   # order_id -> conservative queue-ahead estimate; never claimed exact
+        self.fractional_price_tickers: set = set()  # cent-based trader fails closed on unsupported sub-cent books
 
     # public -------------------------------------------------------------------------------------------------------
     def start(self):
@@ -319,8 +326,17 @@ class KalshiWSBook:
                                            and sid != self.sid_of.get(tk))
             if resub is None and not skip:
                 if typ == "orderbook_snapshot":
-                    self.books[tk] = {"yes": {_cents(p): float(q) for p, q in (m.get("yes_dollars_fp") or [])},
-                                      "no": {_cents(p): float(q) for p, q in (m.get("no_dollars_fp") or [])}}
+                    yes_raw=[(_cents_exact(p),float(q)) for p,q in (m.get("yes_dollars_fp") or [])]
+                    no_raw=[(_cents_exact(p),float(q)) for p,q in (m.get("no_dollars_fp") or [])]
+                    if any(p is None for p,_ in yes_raw+no_raw):
+                        self.fractional_price_tickers.add(tk)
+                        self.books.pop(tk,None)
+                        self.stale.add(tk)
+                        logger.warning(f"[WS] {tk}: sub-cent price grid unsupported by cent-based trader; book rejected")
+                        applied=False
+                    else:
+                        self.fractional_price_tickers.discard(tk)
+                        self.books[tk]={"yes":{p:q for p,q in yes_raw},"no":{p:q for p,q in no_raw}}
                     self.sid_of[tk] = sid
                     self.stale.discard(tk)
                     self.updated[tk] = time.time()
@@ -330,15 +346,25 @@ class KalshiWSBook:
                 elif tk in self.books and tk not in self.stale:
                     side = m.get("side")
                     if side in ("yes", "no"):
-                        px = _cents(m.get("price_dollars", 0))
-                        lvl = self.books[tk][side]
-                        lvl[px] = lvl.get(px, 0.0) + float(m.get("delta_fp", 0) or 0)
-                        if lvl[px] <= 1e-9:
-                            lvl.pop(px, None)
-                        self.updated[tk] = time.time()
-                        self._record(tk)
-                        self._update_queue_tracks_locked(tk)
-                        applied = True
+                        px = _cents_exact(m.get("price_dollars", 0))
+                        if px is None:
+                            self.fractional_price_tickers.add(tk)
+                            self.books.pop(tk,None); self.stale.add(tk)
+                            logger.warning(f"[WS] {tk}: sub-cent delta unsupported; book rejected")
+                            applied=False
+                            lvl=None
+                        else:
+                            lvl = self.books[tk][side]
+                        if lvl is None:
+                            pass
+                        else:
+                            lvl[px] = lvl.get(px, 0.0) + float(m.get("delta_fp", 0) or 0)
+                            if lvl[px] <= 1e-9:
+                                lvl.pop(px, None)
+                            self.updated[tk] = time.time()
+                            self._record(tk)
+                            self._update_queue_tracks_locked(tk)
+                            applied = True
         if resub:
             logger.warning(f"[WS] sequence gap on sid {sid}: {len(resub)} book(s) marked stale; unsubscribing and re-snapshotting")
             self._unsubscribe(old_sid)
