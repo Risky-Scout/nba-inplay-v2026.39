@@ -77,7 +77,7 @@ def logloss(p,y):
 def main():
     h,e=_read("kalshi_queue_history_*.csv"),_read("kalshi_quote_events_*.csv")
     d=intervals(h,e)
-    out={"quote_policy":"qp7","features":FEATURES,"status":"SHADOW","validated":False,
+    out={"quote_policy":"qp8","features":FEATURES,"status":"SHADOW","validated":False,
          "fitted":datetime.now().isoformat(timespec="seconds")}
     if d.empty:
         json.dump(out,open(os.path.join(HERE,"challenger_fill_hazard.json"),"w"),indent=2); return out
