@@ -1,4 +1,4 @@
-name: v2026.39 CI
+name: v2026.40 CI
 on:
   push:
     branches: [main, fanatics-portfolio]
