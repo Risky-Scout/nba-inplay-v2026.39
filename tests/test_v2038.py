@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""v2026.39 checks: one canonical production authorization, policy-family-specific execution evidence (markout gate,
+"""v2026.40 checks: one canonical production authorization, policy-family-specific execution evidence (markout gate,
 execution prior, sizing excluded from the family), the game-clustered sign-flip null test used for FDR, frozen discovery
 -> later confirmation of PRODUCTION cells, behaviour-policy logging with action-support-restricted doubly robust
 evaluation, and champion promotion on a clustered lower bound.
@@ -48,9 +48,9 @@ def clean():
         os.remove(f)
 
 
-check("versions: trader v2026.39, quote policy qp7, engine 2026.29",
-      T.TRADER_VERSION == "v2026.39" and T.QUOTE_POLICY == "qp7" and FE.QUOTE_POLICY == "qp7" and GP.QUOTE_POLICY == "qp7"
-      and mg.ENGINE_VERSION == "2026.29")
+check("versions: trader v2026.40, quote policy qp8, engine 2026.30",
+      T.TRADER_VERSION == "v2026.40" and T.QUOTE_POLICY == "qp8" and FE.QUOTE_POLICY == "qp8" and GP.QUOTE_POLICY == "qp8"
+      and mg.ENGINE_VERSION == "2026.30")
 
 # ── P0-1: one canonical production authorization ────────────────────────────────────────────────────────────────────
 print("1) canonical production authorization")
@@ -88,7 +88,7 @@ clean()
 def marks(fam, mean, n=60, games=12, seed=0):
     r = np.random.default_rng(seed)
     return [dict(order_id=f"{fam}{i}", ticker=f"KXNBAPTS-26NOV0{1 + i % 3}G{i % games:02d}XX-{i}", side="yes", price=50,
-                 contracts=1, maker=True, mode="LIVE", quote_policy="qp7", arm="base", policy_family_id=fam,
+                 contracts=1, maker=True, mode="LIVE", quote_policy="qp8", arm="base", policy_family_id=fam,
                  m30=mean + r.normal(0, 0.5), m30_event="false", p_mkt=0.52, m5=0, m15=0, m120=0) for i in range(n)]
 
 
@@ -225,8 +225,8 @@ r_new = pd.DataFrame([dict(price=51, requested_qty=1, ttl=8, propensity=0.9,
                                pi_b_action=json.dumps(_pa))]).itertuples().__next__()
 r_old = pd.DataFrame([dict(price=51, requested_qty=1, ttl=8, propensity=0.9)]).itertuples().__next__()
 check("logged pi_b gives every level's behaviour probability", FE.behaviour_probs(r_new) == {50: 0.05, 51: 0.9, 52: 0.05})
-check("qp7 exact action distribution is price+qty+TTL", FE.behaviour_action_probs(r_new) == _pa)
-check("legacy price-only row has NO qp7 action support", FE.behaviour_action_probs(r_old) == {})
+check("qp8 exact action distribution is price+qty+TTL", FE.behaviour_action_probs(r_new) == _pa)
+check("legacy price-only row has NO qp8 action support", FE.behaviour_action_probs(r_old) == {})
 
 
 def synth_quotes(n=600, seed=4, dates=("20261101", "20261102", "20261103", "20261104"), log_pi=True):
@@ -252,7 +252,7 @@ def synth_quotes(n=600, seed=4, dates=("20261101", "20261102", "20261103", "2026
                         pi_b_action=(json.dumps({FE.action_key(int(k), 1, ttl): float(v) for k, v in pib.items()}) if log_pi else None),
                         run_id=dates[i % len(dates)] + "_190000",
                         label=float(filled), m30_all=m30 if filled else np.nan, m30_ef=np.nan, q_m30=np.nan if filled else drift,
-                        quote_policy="qp7", arm="base"))
+                        quote_policy="qp8", arm="base"))
     q = pd.DataFrame(out)
     q["date"] = q["run_id"].str[:8]
     q["game"] = q["ticker"].str.split("-").str[1]
@@ -267,7 +267,7 @@ pv = FE.policy_values(m, qq)
 check("policy values report the supported count and overlap share", all(len(v) == 4 for v in pv.values()) and pv["join"][3] == 1.0)
 qq0 = synth_quotes(log_pi=False)
 pr0 = FE.policy_rows(m, qq0)
-check("legacy price-only logs cannot certify qp7 exact actions",
+check("legacy price-only logs cannot certify qp8 exact actions",
       pr0["join_sup"].sum() == 0, f"join support {pr0['join_sup'].mean():.2f}")
 qq_far = qq.copy()
 qq_far["pi_b"] = qq_far.apply(lambda r_: json.dumps({str(int(r_.price)): 1.0}), axis=1)
@@ -327,4 +327,4 @@ print(f"\n{len(PASSES)} passed, {len(FAILS)} failed")
 if FAILS:
     print("FAILED:", FAILS)
     sys.exit(1)
-print("ALL v2026.39 CHECKS PASSED")
+print("ALL v2026.40 CHECKS PASSED")
