@@ -1,7 +1,7 @@
 """Fit phase-specific remaining-minutes uncertainty with hierarchical shrinkage."""
 import numpy as np, pandas as pd, json
 from datetime import datetime
-ENGINE_VERSION="2026.29"; SHRINK_K=25.0
+ENGINE_VERSION="2026.30"; SHRINK_K=25.0
 def score_bucket(m):
     a=abs(float(m)); return "close" if a<=8 else "moderate" if a<=15 else "large" if a<=24 else "blowout"
 def foul_bucket(f):return "0-2" if int(f)<=2 else str(min(5,int(f)))
