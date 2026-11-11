@@ -109,6 +109,78 @@ def _metric_row(d: pd.DataFrame) -> dict:
     }
 
 
+def _paired_loss_views(d: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Matched model-vs-market loss views with explicit sampling units."""
+    if d.empty:
+        return {}
+    x=d.copy()
+    x["model_brier_row"]=(x["p_dir"]-x["y_dir"])**2
+    x["market_brier_row"]=(x["p_mkt_dir"]-x["y_dir"])**2
+    pm=np.clip(x["p_dir"].astype(float), EPS, 1-EPS)
+    pk=np.clip(x["p_mkt_dir"].astype(float), EPS, 1-EPS)
+    y=x["y_dir"].astype(float)
+    x["model_logloss_row"]=-(y*np.log(pm)+(1-y)*np.log(1-pm))
+    x["market_logloss_row"]=-(y*np.log(pk)+(1-y)*np.log(1-pk))
+    x["brier_delta_row"]=x["market_brier_row"]-x["model_brier_row"]
+    x["logloss_delta_row"]=x["market_logloss_row"]-x["model_logloss_row"]
+
+    # Equal-weighted markets: average LOSSES within ticker, then equal-weight tickers.
+    m=x.groupby("ticker", dropna=False).agg(
+        rows=("ticker","size"),
+        model_brier=("model_brier_row","mean"),
+        market_brier=("market_brier_row","mean"),
+        brier_improvement=("brier_delta_row","mean"),
+        model_logloss=("model_logloss_row","mean"),
+        market_logloss=("market_logloss_row","mean"),
+        logloss_improvement=("logloss_delta_row","mean"),
+        game=("game","first"),
+    ).reset_index()
+    market_summary=pd.DataFrame([{
+        "View":"Equal-weighted markets","N_markets":int(len(m)),
+        "Model_Brier":float(m.model_brier.mean()),"Market_Brier":float(m.market_brier.mean()),
+        "Brier_Improvement_vs_Market":float(m.brier_improvement.mean()),
+        "Model_LogLoss":float(m.model_logloss.mean()),"Market_LogLoss":float(m.market_logloss.mean()),
+        "LogLoss_Improvement_vs_Market":float(m.logloss_improvement.mean())
+    }]) if len(m) else pd.DataFrame()
+
+    # Predeclared snapshots: first valid forecast per ticker within each phase.
+    tcol="timestamp" if "timestamp" in x.columns else None
+    if tcol:
+        s=x.sort_values(tcol, kind="mergesort").drop_duplicates(["ticker","phase"],keep="first")
+    else:
+        s=x.drop_duplicates(["ticker","phase"],keep="first")
+    snap=_group_metrics(s,["phase"],"First forecast per market-phase") if len(s) else pd.DataFrame()
+
+    # Game-equal view + cluster bootstrap across games. Each game first averages all of its forecast-row loss deltas.
+    g=x.groupby("game",dropna=False).agg(
+        rows=("ticker","size"),
+        brier_improvement=("brier_delta_row","mean"),
+        logloss_improvement=("logloss_delta_row","mean"),
+    ).reset_index()
+    rng=np.random.default_rng(20261111)
+    def ci(vals):
+        a=np.asarray(vals,float)
+        if len(a)<2:return (float(a.mean()) if len(a) else np.nan,)*2
+        bs=np.array([a[rng.integers(0,len(a),len(a))].mean() for _ in range(4000)])
+        return tuple(float(v) for v in np.percentile(bs,[5,95]))
+    blo,bhi=ci(g.brier_improvement.values) if len(g) else (np.nan,np.nan)
+    llo,lhi=ci(g.logloss_improvement.values) if len(g) else (np.nan,np.nan)
+    game_summary=pd.DataFrame([{
+        "View":"Equal-weighted games","N_games":int(len(g)),
+        "Brier_Improvement_vs_Market":float(g.brier_improvement.mean()) if len(g) else np.nan,
+        "Brier_Improvement_90CI_Lo":blo,"Brier_Improvement_90CI_Hi":bhi,
+        "LogLoss_Improvement_vs_Market":float(g.logloss_improvement.mean()) if len(g) else np.nan,
+        "LogLoss_Improvement_90CI_Lo":llo,"LogLoss_Improvement_90CI_Hi":lhi,
+    }])
+    return {
+        "Equal Weighted Markets":market_summary,
+        "Market Loss Detail":m,
+        "Phase Snapshots":snap,
+        "Equal Weighted Games":game_summary,
+        "Game Loss Detail":g,
+    }
+
+
 def _group_metrics(d: pd.DataFrame, cols: list[str], label: str) -> pd.DataFrame:
     rows = []
     if d.empty:
@@ -148,13 +220,14 @@ def predictive_audit(res: dict[str, str]) -> tuple[pd.DataFrame, dict[str, pd.Da
     d["model_minus_market"] = d["p_dir"] - d["p_mkt_dir"]
 
     tables = {
-        "Calibration Overall": pd.DataFrame([{"View": "Overall", **_metric_row(d)}]),
+        "Calibration Overall": pd.DataFrame([{"View": "All timestamped rows", **_metric_row(d)}]),
         "Calibration by Stat": _group_metrics(d, ["stat"], "Stat"),
         "Calibration by Direction": _group_metrics(d, ["directive"], "Directive"),
         "Calibration Stat x Dir": _group_metrics(d, ["stat", "directive"], "Stat x Directive"),
         "Calibration by Phase": _group_metrics(d, ["phase"], "Phase"),
         "Calibration Stat x Phase": _group_metrics(d, ["stat", "phase"], "Stat x Phase"),
     }
+    tables.update(_paired_loss_views(d))
     return d, tables
 
 
