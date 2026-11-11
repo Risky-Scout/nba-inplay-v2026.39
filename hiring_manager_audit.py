@@ -282,8 +282,9 @@ def opportunity_audit(res: dict[str, str], match_window_s: float = 60.0):
             Profitable_Misses=("counterfactual_net_c", lambda x: int((x > 0).sum())),
             Losing_Misses=("counterfactual_net_c", lambda x: int((x < 0).sum())),
             Mean_Counterfactual_Net_c=("counterfactual_net_c", "mean"),
-            Counterfactual_1Contract_PnL_$=("counterfactual_pnl_$", "sum"),
+            Counterfactual_1Contract_PnL_USD=("counterfactual_pnl_$", "sum"),
         ).reset_index()
+        gate = gate.rename(columns={"Counterfactual_1Contract_PnL_USD": "Counterfactual_1Contract_PnL_$"})
 
     return e, economic, gate
 
@@ -318,8 +319,9 @@ def decision_ledger_audit(res: dict[str, str]):
         Profitable=("counterfactual_net_c", lambda x: int((x > 0).sum())),
         Losing=("counterfactual_net_c", lambda x: int((x < 0).sum())),
         Mean_Counterfactual_Net_c=("counterfactual_net_c","mean"),
-        Counterfactual_1Contract_PnL_$=("counterfactual_pnl_$","sum"),
+        Counterfactual_1Contract_PnL_USD=("counterfactual_pnl_$","sum"),
     ).reset_index()
+    attr = attr.rename(columns={"Counterfactual_1Contract_PnL_USD": "Counterfactual_1Contract_PnL_$"})
     return d, attr
 
 
