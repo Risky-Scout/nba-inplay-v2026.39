@@ -7,3 +7,5 @@ python-dotenv>=1.0
 curl_cffi>=0.7   # optional: more reliable NBA CDN access
 websocket-client>=1.6   # v2026.36: Kalshi WebSocket order book (--ws)
 websockets>=12   # optional: only for tests/test_ws_mock.py
+openpyxl>=3.1
+tabulate>=0.9
