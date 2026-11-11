@@ -98,7 +98,7 @@ cp=eng._calibrated_profile(prof)
 ck("generative calibration changes attempt intensity",cp.p_fga_rim_100>prof.p_fga_rim_100 and cp.p_fg3a_100<prof.p_fg3a_100)
 ck("generative calibration does not change shooting efficiency",cp.p_fgpct_rim==prof.p_fgpct_rim and cp.p_fg3pct==prof.p_fg3pct)
 _role_state=MG.LiveInPlayState("g","g","Q2 6:00",2,1800,1,2,"H","A",50,48,"HOME",[1],[],{
-    1:{"_team_actions":40.0,"FTA":8,"TOV":5,"ORB":2}
+    1:{"MIN":12.0,"_team_actions":40.0,"_team_minutes":60.0,"FTA":8,"TOV":5,"ORB":2}
 },pbp_context=MG.LivePBPContext(live_fta={1:8},live_tov={1:5},live_orb={1:2},
     live_orb_opportunities={1:10},live_drb_opportunities={1:10}))
 _role_eng=MG.InPlayMarkovEngine(_role_state,[prof],[MG.DTPlayerSkillProfile(2,"Q",2,3,78,210,100,32,.25,8,6,7,6,5,3,2,6,1,1,.65,.42,.36,.8,1,0,1)],0,0)
