@@ -1,7 +1,7 @@
 # NBA In-Play Pricing & Market-Making System
 
 **Author:** Joseph Shackelford, ASA, MAAA  
-**Trader:** v2026.39 · **Probability engine:** 2026.29 · **Execution policy:** qp7
+**Trader:** v2026.40 · **Probability engine:** 2026.30 · **Execution policy:** qp8
 
 An end-to-end research system for **real-time NBA player-prop pricing, execution, portfolio construction, and model governance**.
 
@@ -271,9 +271,9 @@ For a guided technical review, see **[HIRING_MANAGER_GUIDE.md](HIRING_MANAGER_GU
 | Area | Status |
 |---|---|
 | Code / regression validation | PASS |
-| Engine version | 2026.29 |
-| Trader version | v2026.39 |
-| Execution policy | qp7 |
+| Engine version | 2026.30 |
+| Trader version | v2026.40 |
+| Execution policy | qp8 |
 | Full production authority | Not assumed; must be earned from current evidence |
 | Recommended review mode | PAPER / research only |
 
