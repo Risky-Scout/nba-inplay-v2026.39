@@ -243,7 +243,7 @@ def predictive_audit(res: dict[str, str]) -> tuple[pd.DataFrame, dict[str, pd.Da
     d["model_minus_market"] = d["p_dir"] - d["p_mkt_dir"]
 
     tables = {
-        "Calibration Overall": pd.DataFrame([{"View": "All timestamped rows", **_metric_row(d)}]),
+        "Calibration Overall": pd.DataFrame([{"View": "Calibrated standalone model — all timestamped rows", **_metric_row(d)}]),
         "Calibration by Stat": _group_metrics(d, ["stat"], "Stat"),
         "Calibration by Direction": _group_metrics(d, ["directive"], "Directive"),
         "Calibration Stat x Dir": _group_metrics(d, ["stat", "directive"], "Stat x Directive"),
@@ -251,6 +251,20 @@ def predictive_audit(res: dict[str, str]) -> tuple[pd.DataFrame, dict[str, pd.Da
         "Calibration Stat x Phase": _group_metrics(d, ["stat", "phase"], "Stat x Phase"),
     }
     tables.update(_paired_loss_views(d))
+    if "p_trade_yes" in d.columns:
+        pt=pd.to_numeric(d["p_trade_yes"],errors="coerce")
+        ok=pt.notna()
+        if ok.any():
+            td=d.loc[ok].copy()
+            td["trade_directive"]=np.where(pt.loc[ok]>=td["p_mkt_yes"],"OVER","UNDER")
+            td["p_dir"]=np.where(td["trade_directive"]=="OVER",pt.loc[ok],1.0-pt.loc[ok])
+            td["p_mkt_dir"]=np.where(td["trade_directive"]=="OVER",td["p_mkt_yes"],1.0-td["p_mkt_yes"])
+            td["y_dir"]=np.where(td["trade_directive"]=="OVER",td["y_yes"],1.0-td["y_yes"])
+            tables["Trade Probability Overall"]=pd.DataFrame([{
+                "View":"Market-relative trade probability — do not attribute to standalone engine",
+                **_metric_row(td)
+            }])
+            tables["Trade Prob by Stat"]=_group_metrics(td,["stat"],"Market-relative trade probability by stat")
     return d, tables
 
 
@@ -612,7 +626,7 @@ def main():
         if not pred.empty:
             cols = [c for c in [
                 "timestamp","ticker","clock","player","stat","line","phase","directive",
-                "p_model_yes","p_mkt_yes","p_dir","p_mkt_dir","y_dir","model_minus_market","settlement","engine"
+                "p_model_raw","p_model_yes","p_trade_yes","p_mkt_yes","p_dir","p_mkt_dir","y_dir","model_minus_market","settlement","engine"
             ] if c in pred.columns]
             pred[cols].to_excel(w, sheet_name="Settled Predictions", index=False)
         if not funnel.empty:
