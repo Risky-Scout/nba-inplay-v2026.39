@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Nightly qp7 diagnostics: opportunity capacity, P&L attribution, and clustered drawdown risk.
+"""Nightly qp8 diagnostics: opportunity capacity, P&L attribution, and clustered drawdown risk.
 
 None of these outputs can loosen a trading gate or risk limit.
 """
