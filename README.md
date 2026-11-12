@@ -1,87 +1,46 @@
 # NBA In-Play Pricing & Market-Making System
 
 **Author:** Joseph Shackelford, ASA, MAAA  
-**Trader:** v2026.40 · **Probability engine:** 2026.30 · **Execution policy:** qp8
+**Trader:** v2026.40 · **Probability engine:** 2026.31 · **Execution policy:** qp8
 
-An end-to-end research system for **real-time NBA player-prop pricing, execution, portfolio construction, and model governance**.
+An end-to-end research system for real-time NBA player-prop pricing, execution, portfolio construction, and model governance.
 
-The project is designed to answer a harder question than “what is the fair probability?”:
+## Current status
 
-> Given uncertain live-game state, market prices, execution risk, correlated exposures, and model uncertainty, **should an order be quoted at all—and if so, at what price and size?**
+| Area | Status |
+|---|---|
+| Trader | v2026.40 |
+| Probability engine | 2026.31 |
+| Quote policy | qp8 |
+| Code path | current |
+| Full production authority | not assumed; must be earned from current evidence |
+| Recommended review mode | PAPER / research only |
 
-## Live review in GitHub Codespaces — no reviewer accounts required
+## What the system does
 
-The portfolio branch includes a **LIVE REVIEW** path for current or upcoming NBA games.
+- prices live NBA PTS / REB / AST / 3PM / PRA markets;
+- uses a generative Markov / Monte Carlo engine with live NBA state and Dunks & Threes priors;
+- models path-dependent minutes, rotations, foul-out risk, pace, usage, shot mix, assists, and rebound opportunities;
+- anchors probabilities to market information unless the model earns incremental authority;
+- optimizes maker quote price, quantity, TTL, fill probability, and execution residual;
+- sizes correlated positions with Kelly, hard caps, shared model-risk factors, and CVaR;
+- revalidates play-by-play and book state immediately before sending;
+- records prediction, decision, quote, fill, markout, P&L, and governance evidence.
 
-It uses **no synthetic game, player, or market inputs**:
+## Probability engine 2026.31
 
-- current NBA scoreboard, box score, and play-by-play;
-- current public Kalshi player-prop markets and REST order books;
-- a current Dunks & Threes snapshot refreshed privately in GitHub Actions.
+Engine 2026.31 is intentionally a new probability identity and does not inherit 2026.30 calibration or authority.
 
-The reviewer never receives the repository owner's D&T credential. The Codespace consumes only the current read-only snapshot.
+Key changes relative to 2026.30:
 
-### Quick start
+- lexical engine/version identities are preserved at CSV ingestion;
+- valid zero shot rates remain zero rather than receiving synthetic attempt mass;
+- zero-foot shots remain rim attempts rather than falling through to a default distance;
+- live rebound learning uses event-time lineup exposure reconstructed from substitutions when available;
+- synthetic ORB/DRB minimum capture weights are removed;
+- D&T generative calibration is iterative, damped, and verified on a fresh simulation seed rather than certified by one target/simulation ratio pass.
 
-1. Open this branch in GitHub Codespaces.
-2. Validate the code:
-
-```bash
-./scripts/validate.sh
-```
-
-3. Run the current-game live review:
-
-```bash
-./scripts/run_live_review.sh
-```
-
-The live-review command is **PAPER-only by construction**. It does not pass `--live`, `--pilot-live`, or authenticated WebSocket flags, and the trader refuses any attempt to combine `--review-dt-snapshot` with real-money mode.
-
-The same probability engine, market parser, execution economics, portfolio optimizer, pre-send revalidation, and order-state machinery are used. Only the D&T authentication path is replaced by the read-only current snapshot.
-
-> **Owner setup required once:** configure the repository's `DT_API_KEY` Actions secret and run the **Live Review Data Refresh** workflow. Confirm that the Dunks & Threes subscription terms permit sharing the captured/derived snapshot with the reviewer before enabling external access.
-
-See [LIVE_REVIEW_DATA_POLICY.md](LIVE_REVIEW_DATA_POLICY.md) for provenance and safety details.
-
-## Reviewer audit after settlement
-
-After the live review, the hiring manager can generate an evidence package:
-
-```bash
-./scripts/run_hiring_manager_audit.sh
-```
-
-It reports:
-
-- model vs market Brier score and log loss;
-- calibration by stat, proposed OVER/UNDER directive, and game phase;
-- every timestamp-valid eligible decision;
-- which opportunities were actually quoted;
-- profitable **and losing** missed opportunities;
-- counterfactual one-contract P&L at the logged quote price;
-- gate attribution showing whether rejected opportunities would have helped or hurt.
-
-Headline opportunity economics use the first eligible observation per ticker/side to prevent repeated polling from inflating the sample.
-
-See [HIRING_MANAGER_GUIDE.md](HIRING_MANAGER_GUIDE.md) for interpretation.
-
-## What this project demonstrates
-
-- live player-prop probability estimation
-- generative Markov / Monte Carlo simulation
-- path-dependent rotations and blowout behavior
-- market-anchored probability calibration
-- uncertainty-aware edge estimation
-- maker execution and queue-state modeling
-- fill-probability and partial-fill modeling
-- correlated Kelly portfolio optimization
-- CVaR and hard-notional risk controls
-- WebSocket market monitoring with REST fallback
-- stale-state / stale-book fail-closed behavior
-- walk-forward validation and production governance
-
-## System architecture
+## Architecture
 
 ```text
 Live NBA state + D&T priors
@@ -92,191 +51,87 @@ Generative Markov simulation
             ↓
 Joint player-stat distributions
             ↓
-Kalshi + sportsbook market state
+Kalshi + optional sportsbook state
             ↓
-Market-anchored probability layer
-            ↓
-Calibration + uncertainty penalties
+Market-anchored calibration / authority
             ↓
 Execution-adjusted expected value
             ↓
-Correlated portfolio optimization
+Correlated portfolio optimization + CVaR
             ↓
 Fresh PBP + fresh-book revalidation
             ↓
 Maker quote / reject
             ↓
-Fill, markout, P&L, and governance evidence
+Fill, markout, P&L and governance evidence
 ```
 
-## Core design choices
+## Live review
 
-### 1. Generative probability model
+For a hiring-manager demonstration:
 
-The model updates live player-stat distributions from possession-level game state. Calibration acts on underlying event intensities and role processes rather than cosmetically forcing final simulated totals toward a target.
+```bash
+./scripts/validate.sh
+./scripts/run_live_review.sh
+```
 
-Examples:
+The live-review script is PAPER-only by construction. It cannot submit real-money orders.
 
-- PTS calibration alters rim / mid / FTA attempt intensities
-- 3PM primarily alters 3PA intensity
-- rebounds alter ORB / DRB capture weights
-- assists alter assist routing
-- shooting percentages are not changed merely to force a mean
+After settlement:
 
-### 2. Path-dependent rotations
-
-Each Monte Carlo path can evolve differently. Simulated score margin, bench duration, stint length, and game phase affect substitution / return hazards and deep-bench probability.
-
-### 3. Market anchoring
-
-The system does **not** assume the model dominates the market.
-
-Model influence must be earned through out-of-sample evidence. If that evidence is absent, the system can assign zero directional authority rather than manufacture a trade.
-
-### 4. Execution-aware economics
-
-The execution layer models:
-
-- requested quantity
-- quantity relative to displayed depth
-- quantity relative to queue ahead
-- queue depletion
-- price-level resets
-- time-to-live
-- partial fills
-- expected filled quantity
-- post-fill markouts
-
-The action identity for qp7 is **price × requested quantity × TTL bucket**.
-
-### 5. Portfolio construction
-
-Candidate orders are sized jointly rather than independently.
-
-The optimizer includes:
-
-- fractional Kelly
-- player / game / position / session caps
-- cross-market covariance
-- shared model-risk shocks
-- CVaR constraints
-- existing exposure
-- full-notional hard risk treatment
-
-Fill probability may affect expected economic value, but it never reduces hard worst-case exposure.
-
-### 6. Fail-closed execution
-
-Immediately before submission, the trader re-checks both the live game state and the order book.
-
-An order is rejected or repriced when, for example:
-
-- play-by-play state changed
-- market moved materially
-- the book became stale
-- the WebSocket sequence became unreliable
-- the quote would now cross
-- the opportunity no longer survives risk / edge checks
-
-### 7. Model governance
-
-**Code readiness is not economic readiness.**
-
-Engine 2026.29 and quote policy qp7 do not inherit production authority from older versions. They must earn it from current evidence.
-
-Production authorization requires evidence such as:
-
-- walk-forward predictive validation
-- confirmed authority on later unseen games
-- live fill evidence for the current policy family
-- live post-fill markouts
-- an earned execution prior
-- canonical model-status approval
-
-A new version may therefore be technically correct and still be intentionally blocked from full production.
+```bash
+./scripts/run_hiring_manager_audit.sh
+```
 
 ## Important files
 
 | File | Purpose |
 |---|---|
 | `nba_markov_engine.py` | Live-state probability engine and Monte Carlo simulation |
-| `nba_stint_engine.py` | Minutes, rotation, substitution, and return behavior |
-| `kalshi_nba_inplay_trader.py` | Market parsing, pricing, execution, order lifecycle, and safeguards |
-| `kalshi_portfolio_qp.py` | Correlated portfolio optimization and risk constraints |
-| `kalshi_exec_model.py` | Execution probability / expected-filled-quantity interface |
-| `fit_calibration.py` | Walk-forward probability calibration and authority |
-| `fit_execution.py` | Execution / fill / markout model fitting |
-| `grade_predictions.py` | Predictive, execution, and production-gate grading |
-| `kalshi_ws.py` | WebSocket order-book state and queue tracking |
-| `predictive_governance.py` | Version-specific predictive authority |
-| `execution_size_authority.py` | Quantity-bucket production authority |
-| `risk_report.py` | Drawdown / risk reporting |
-| `pnl_attribution.py` | P&L attribution |
-| `capacity_report.py` | Capacity diagnostics |
-| `nightly_reports.py` | Nightly research / governance outputs |
+| `nba_stint_engine.py` | Minutes / rotation mechanics |
+| `rotation_hazard.py` | Substitution / return and pathwise blowout helpers |
+| `endgame_state.py` | Foul / bonus / intentional-foul state helpers |
+| `kalshi_nba_inplay_trader.py` | Pricing, execution, order lifecycle and safeguards |
+| `kalshi_portfolio_qp.py` | Correlated sizing and CVaR |
+| `kalshi_exec_model.py` | Execution probability / filled-quantity interface |
+| `kalshi_ws.py` | WebSocket order-book and queue state |
+| `fit_calibration.py` | Walk-forward calibration and local authority |
+| `fit_execution.py` | Execution challenger/champion fitting |
+| `grade_predictions.py` | Predictive / execution / production-gate grading |
+| `kalshi_results.py` | Settlement lookup and identity-safe evidence loading |
+| `nightly_reports.py` | P&L / attribution / nightly reporting |
+| `risk_report.py` | Drawdown and risk reporting |
+| `capacity_report.py` | Observed-support capacity diagnostics |
+| `execution_size_authority.py` | Quantity-bucket authority |
+| `hiring_manager_audit.py` | Reviewer-facing audit package |
 
 ## Validation
-
-The current regression stack covers order integrity, probability-engine behavior, execution logic, portfolio risk, WebSocket recovery, policy-family isolation, and governance.
 
 Run:
 
 ```bash
-python3 test_v2039.py
-python3 tests/test_v2037.py
-python3 tests/test_v2038.py
+./scripts/validate.sh
 ```
 
-Expected results:
+That compiles and runs the current regression stack. The expected final banner is:
 
 ```text
-ALL v2026.39 CHECKS PASSED
-V2026.37 CHECKS PASSED
-ALL v2026.39 CHECKS PASSED
+PORTFOLIO VALIDATION: PASS
+Trader v2026.40 | Engine 2026.31 | Quote policy qp8
 ```
 
-## Safe demo
+## Production governance
 
-The default trader mode is **PAPER**.
+Code readiness is not economic readiness.
 
-A representative research demonstration is:
+A real-money production start must earn the required predictive and execution evidence for the current engine / policy family. New probability-engine versions start with fresh predictive authority. Safety gates are not weakened to force activity.
 
-```bash
-python3 kalshi_nba_inplay_trader.py \
-  --ws \
-  --sims 8000 \
-  --shadow-sims 2000 \
-  --model-weight 0.35
-```
+## Known limitations
 
-The manual model weight is explicitly labeled a **RESEARCH OVERRIDE** and is not production authority.
+- Engine 2026.31 still needs fresh out-of-sample evidence before production authorization.
+- qp8 still needs sufficient live execution evidence before a champion execution model can be promoted.
+- close-game final-two-minute states remain blocked from new entries until the full foul / free-throw endgame process is integrated into the main event generator.
+- default quoting remains one-sided unless the NO side earns authority.
+- PAPER fill simulation is research evidence, not a substitute for real queue/fill evidence.
 
-For a hiring-manager review, use PAPER mode only.
-
-## What to look at first
-
-If you have 5 minutes:
-
-1. Read this README.
-2. Open `nba_markov_engine.py` for the probability architecture.
-3. Open `kalshi_nba_inplay_trader.py` for the execution / fail-closed logic.
-4. Open `kalshi_portfolio_qp.py` for correlated sizing and CVaR.
-5. Open `fit_calibration.py` and `predictive_governance.py` for evidence-based authority.
-6. Review `test_v2039.py` for the highest-priority regression checks.
-
-For a guided technical review, see **[HIRING_MANAGER_GUIDE.md](HIRING_MANAGER_GUIDE.md)**.
-
-## Current status
-
-| Area | Status |
-|---|---|
-| Code / regression validation | PASS |
-| Engine version | 2026.30 |
-| Trader version | v2026.40 |
-| Execution policy | qp8 |
-| Full production authority | Not assumed; must be earned from current evidence |
-| Recommended review mode | PAPER / research only |
-
-## Scope
-
-This repository is a quantitative-research and engineering portfolio project. It demonstrates probability modeling, market making, execution, portfolio risk, testing, and governance. It does **not** claim guaranteed profitability or positive returns on any particular day.
+This repository is a quantitative-research and engineering portfolio project. It does not claim guaranteed profitability.
