@@ -562,7 +562,7 @@ check("starvation is diagnostic only (Funnel has no threshold attributes; prints
 fn.posted(1)
 check("posting an order resets the starvation timer and reasons", fn.reasons == {} and time.time() - fn.last_post < 1)
 
-print("10) engine items (superseded by engine 2026.30)")
+print("10) current engine support items (engine 2026.31)")
 _rh = RotationHazardModel()
 _base = dict(player_id=1, team_id=1, role="starter", starter=True, completed_stints=1, period=4,
              seconds_remaining_in_period=360, fouls=2, projected_remaining_minutes=12, normal_window=True)
