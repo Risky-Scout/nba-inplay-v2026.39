@@ -8,12 +8,9 @@ more often than the market price implied?
 Positive = trading toward the model beats the market price (before spread and fees). Each market is
 weighted equally, and the 90% interval resamples PLAYERS (a player's 20+/25+/30+ ladder moves together).
 
-LIVE GATE (written to model_status.json, read by the trader before --live). Since v2026.30 money is authorized by
-execution evidence: the model edge gate below AND settled profit on fills that actually happened (>= 100 fills, 90%
-interval above 0) AND event-free 30s maker markouts (>= 30, mean >= 0). Eligible-candidate P&L is research only.
-    only predictions logged by v2026.19+ count (older logs include the Nov 5 bugs). They are out of sample by
-    construction: any calibration active when they were made was fitted on earlier nights. PASS needs >= 300 settled markets, a 90% interval entirely above 0, and a mean edge of at
-    least 2c (roughly the cost of getting filled).
+PRODUCTION AUTHORIZATION is deliberately stricter than broad predictive diagnostics. The grader requires current-engine
+predictive sanity, confirmed local authority, current-policy-family LIVE fill evidence, a current-policy-family markout
+gate, and an earned execution prior. PAPER evidence is diagnostic and cannot authorize production.
 Usage: python3 grade_predictions.py [kalshi_predictions_YYYY-MM-DD.csv ...]   (default: all of them)
 """
 import os
