@@ -1,4 +1,4 @@
-"""qp7 discrete-time fill-hazard and exact action identity."""
+"""qp8 discrete-time fill-hazard helpers and exact action identity."""
 import numpy as np
 MIN_TERMINAL,MIN_FILLS,MIN_GAMES=500,75,10
 def cumulative_fill_probability(hazards):
