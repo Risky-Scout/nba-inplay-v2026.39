@@ -1,4 +1,4 @@
-"""qp7 quantity-aware execution size authority."""
+"""qp8 quantity-aware execution size authority."""
 from __future__ import annotations
 import json
 from datetime import datetime
