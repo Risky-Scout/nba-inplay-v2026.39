@@ -586,8 +586,8 @@ _vdf = pd.DataFrame([
 ])
 _vfit = fit_rotation_variance_frame(_vdf)
 check("31. fitted phase/rotation variance file has supported buckets", bool(_vfit.get("buckets")))
-check("32. engine prior fitting is versioned for the new probability engine", _vfit.get("engine_version") == "2026.30")
-check("engine version advanced only for Phase-B probability changes", mg.ENGINE_VERSION == "2026.30")
+check("32. engine prior fitting is versioned for the new probability engine", _vfit.get("engine_version") == "2026.31")
+check("engine version advanced only for Phase-B probability changes", mg.ENGINE_VERSION == "2026.31")
 
 # ── full main() cycles against mocks ─────────────────────────────────────────────────────────────────────────────────
 print("11) full trader cycles (mocked NBA / D&T / Kalshi)")
