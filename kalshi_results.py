@@ -10,6 +10,29 @@ import requests
 import numpy as np
 import pandas as pd
 
+IDENTITY_DTYPES = {
+    "engine": "string", "engine_version": "string", "cal_id": "string",
+    "policy_id": "string", "policy_family_id": "string",
+    "exec_model_id": "string", "exec_prior_id": "string",
+    "run_id": "string", "order_id": "string", "client_order_id": "string",
+    "quote_policy": "string", "fit_id": "string", "schema_version": "string",
+    "ticker": "string",
+}
+
+def read_log_csv(path, **kwargs):
+    """Read evidence logs with opaque identity fields protected before dtype inference.
+
+    Version identifiers are lexical strings: 2026.3 and 2026.30 are distinct identities.
+    This prevents pandas from silently turning an original CSV token 2026.30 into 2026.3.
+    """
+    supplied = kwargs.pop("dtype", None)
+    if supplied is not None and not isinstance(supplied, dict):
+        raise TypeError("read_log_csv requires dtype to be a mapping")
+    dtype = dict(supplied or {})
+    dtype.update(IDENTITY_DTYPES)
+    return pd.read_csv(path, dtype=dtype, **kwargs)
+
+
 HOSTS = ["https://api.elections.kalshi.com/trade-api/v2", "https://external-api.kalshi.com/trade-api/v2"]
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settlements.csv")
 
@@ -25,7 +48,7 @@ def load_predictions(paths=None) -> pd.DataFrame:
         raise SystemExit("No kalshi_predictions_*.csv files found in this folder.")
     frames = []
     for p in paths:
-        d = pd.read_csv(p)
+        d = read_log_csv(p)
         d["source_file"] = os.path.basename(p)
         frames.append(d)
     df = pd.concat(frames, ignore_index=True)
