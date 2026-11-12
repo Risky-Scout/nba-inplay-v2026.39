@@ -257,7 +257,7 @@ class NBALivePlayByPlayParser:
                 if act_type == "3pt":
                     live_3pt_fga[pid] = live_3pt_fga.get(pid, 0) + 1
                 else:
-                    dist = float(act.get("shotDistance", 10.0) or 10.0)
+                    dist = finite_or_default(act.get("shotDistance"), 10.0)
                     quals = act.get("qualifiers", []) or []
                     # v2026.28: rim = restricted area (<= 4 ft), matching D&T's rim zone. "Points in the paint" also
                     # covers 5-15 ft floaters/hooks, which D&T counts as mid-range (the field was unused before).
@@ -523,11 +523,12 @@ class RoleCalibratedMarkovCompiler:
         prior = np.array([max(0.0, p.p_fga_rim_100), max(0.0, p.p_fga_mid_100), max(0.0, p.p_fg3a_100)])
         tot = float(prior.sum())
         if tot <= 0:
-            return 0.4, 0.4, 0.4
+            # A genuine zero-attempt prior is not missing data. Do not manufacture shot volume.
+            return 0.0, 0.0, 0.0
         live = np.array([self.pbp.live_rim_fga.get(p.player_id, 0), self.pbp.live_mid_fga.get(p.player_id, 0),
                          self.pbp.live_3pt_fga.get(p.player_id, 0)], dtype=float)
         share = (SHOT_MIX_KAPPA * prior / tot + live) / (SHOT_MIX_KAPPA + live.sum())
-        return tuple(float(max(0.4, x)) for x in tot * usg_scalar * share)
+        return tuple(float(max(0.0, x)) for x in tot * usg_scalar * share)
 
     def _compile_matrices(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         Q = np.zeros((5, 5))
@@ -618,8 +619,12 @@ def segment_lengths(T_sec: float) -> List[float]:
         t -= L
     return out or [max(1e-6, float(T_sec))]
 CALIB_STATS = (("PTS", "p_pts"), ("REB", "p_reb"), ("AST", "p_ast"), ("3PM", "p_fg3m"))
-CALIB_TRUST = (0.67, 1.50)   # raw D&T/sim ratio outside this band => stat flagged untradeable
-ENGINE_VERSION = "2026.30"    # calibrations are only valid for the engine version they were fitted on
+CALIB_TRUST = (0.67, 1.50)   # fitted generator multiplier outside this band => stat flagged untradeable
+CALIB_MULT_BOUNDS = (0.50, 2.00)
+CALIB_MAX_ITER = 3
+CALIB_DAMPING = 0.65
+CALIB_VERIFY_TOL = 0.08       # fresh-seed mean must land within 8% of D&T target to be tradeable
+ENGINE_VERSION = "2026.31"    # calibrations are only valid for the engine version they were fitted on
 # v2026.25: the extra matchup layer (DEPM, rim protection, steal pressure on top of D&T's GAME-OPTIMIZED skills, which
 # already account for opponents) is a coefficient, not a switch. Production default 0 = D&T only, until the logged A/B
 # (p_shadow = strength 1) earns it weight out of sample. Older code used MATCHUP_LAYER (True == strength 1).
@@ -1216,35 +1221,75 @@ def calibrate_to_dt(
     n_sims: int = 1500,
     seed: int = 7
 ) -> Tuple[Dict[int, Dict[str, float]], Dict[Tuple[int, str], bool], Dict[str, any]]:
-    """Full-game sim from tip vs the D&T projected box -> per player/stat multipliers + trust flags."""
+    """Fit generator multipliers to D&T means, then verify them on a fresh simulation seed.
+
+    v2026.31 replaces one-pass target/sim scaling. PTS, 3PM, REB and AST parameters are coupled in the
+    generator, so a single ratio correction need not reproduce the requested means. Common random numbers
+    stabilize the iterative fit; damped multiplicative updates prevent oscillation; an independent final
+    simulation decides trust. A stat is tradeable only when its multiplier is inside CALIB_TRUST and the
+    fresh-seed simulated mean is within CALIB_VERIFY_TOL of its D&T target.
+    """
     st = LiveInPlayState(
         game_id="calib", matchup_title="calib", clock_display="Q1 12:00", period=1, seconds_remaining_in_game=2880.0,
         home_team_id=home_team_id, away_team_id=away_team_id, home_alias="H", away_alias="A", home_score=0, away_score=0,
         possession_team="HOME", on_court_home=[], on_court_away=[], live_box={}, game_status=1)
-    out = InPlayMarkovEngine(st, home_roster, away_roster, home_depm_base, away_depm_base).run_monte_carlo(n_sims, seed)
     rows = {int(r["player_id"]): r for _, r in box_df.iterrows()} if not box_df.empty else {}
-    calib, trusted = {}, {}
-    for pid, i in out["id_to_idx"].items():
+
+    def target_for(pid: int, stat: str, col: str) -> Optional[float]:
         r = rows.get(pid)
         if r is None:
-            continue
-        # v2 box projections are driven by p_mp_48 (incl. chance of not playing); the sim is conditional on playing.
-        mp_all = float(r.get("p_mp_48") or r.get("p_mp") or 0.0)
-        mp_act = float(r.get("p_mp_48_active") or mp_all or 0.0)
+            return None
+        tgt = r.get(col)
+        if tgt is None or pd.isna(tgt):
+            return None
+        mp_all = finite_or_default(r.get("p_mp_48"), finite_or_default(r.get("p_mp"), 0.0))
+        mp_act = finite_or_default(r.get("p_mp_48_active"), mp_all)
         scale = (mp_act / mp_all) if mp_all > 0 and mp_act > 0 else 1.0
+        return max(0.0, float(tgt) * scale)
+
+    calib: Dict[int, Dict[str, float]] = {}
+    for _ in range(CALIB_MAX_ITER):
+        fit_out = InPlayMarkovEngine(
+            st, home_roster, away_roster, home_depm_base, away_depm_base, calib=calib
+        ).run_monte_carlo(n_sims, seed)
+        max_rel = 0.0
+        for pid, i in fit_out["id_to_idx"].items():
+            for stat, col in CALIB_STATS:
+                tgt = target_for(pid, stat, col)
+                if tgt is None or tgt < 0.25:
+                    continue
+                sim_mean = float(fit_out[stat][:, i].mean())
+                if sim_mean < 0.25:
+                    continue
+                max_rel = max(max_rel, abs(sim_mean - tgt) / max(tgt, 0.25))
+                ratio = max(1e-6, tgt / sim_mean)
+                old = float(calib.get(pid, {}).get(stat, 1.0))
+                calib.setdefault(pid, {})[stat] = float(np.clip(
+                    old * (ratio ** CALIB_DAMPING), *CALIB_MULT_BOUNDS))
+        if max_rel <= 0.03:
+            break
+
+    verify_n = max(2000, n_sims)
+    out = InPlayMarkovEngine(
+        st, home_roster, away_roster, home_depm_base, away_depm_base, calib=calib
+    ).run_monte_carlo(verify_n, seed + 10007)
+
+    trusted: Dict[Tuple[int, str], bool] = {}
+    for pid, i in out["id_to_idx"].items():
         for stat, col in CALIB_STATS:
-            tgt = r.get(col)
-            if tgt is None or pd.isna(tgt):
+            tgt = target_for(pid, stat, col)
+            if tgt is None or tgt < 0.25:
+                calib.setdefault(pid, {})[stat] = 1.0
+                trusted[(pid, stat)] = False
                 continue
-            tgt = float(tgt) * scale
             sim_mean = float(out[stat][:, i].mean())
-            if sim_mean < 0.25 or tgt < 0.25:
-                calib.setdefault(pid, {})[stat], trusted[(pid, stat)] = 1.0, False
-                continue
-            raw = tgt / sim_mean
-            calib.setdefault(pid, {})[stat] = float(np.clip(raw, 0.5, 2.0))
-            trusted[(pid, stat)] = CALIB_TRUST[0] <= raw <= CALIB_TRUST[1]
-    for pid in list(calib):
+            mult = float(calib.get(pid, {}).get(stat, 1.0))
+            rel_err = abs(sim_mean - tgt) / max(tgt, 0.25)
+            trusted[(pid, stat)] = (
+                sim_mean >= 0.25
+                and CALIB_TRUST[0] <= mult <= CALIB_TRUST[1]
+                and rel_err <= CALIB_VERIFY_TOL
+            )
         trusted[(pid, "PRA")] = all(trusted.get((pid, s), False) for s in ("PTS", "REB", "AST"))
     return calib, trusted, out
 
