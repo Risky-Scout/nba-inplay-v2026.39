@@ -29,7 +29,7 @@ jobs:
       - name: Checkout portfolio code
         uses: actions/checkout@v4
         with:
-          ref: fanatics-portfolio
+          ref: main
           fetch-depth: 0
 
       - name: Set up Python
