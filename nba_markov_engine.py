@@ -161,6 +161,10 @@ class LivePBPContext:
     live_drb: Dict[int, int] = field(default_factory=dict)
     live_orb_opportunities: Dict[int, int] = field(default_factory=dict)  # keyed by team_id
     live_drb_opportunities: Dict[int, int] = field(default_factory=dict)  # keyed by team_id
+    # v2026.31: exact FG-miss opportunities reconstructed from the current lineups and substitution history.
+    # These are preferred to elapsed-minutes allocation when available.
+    live_orb_opportunities_player: Dict[int, int] = field(default_factory=dict)
+    live_drb_opportunities_player: Dict[int, int] = field(default_factory=dict)
     current_stint_minutes: Dict[int, float] = field(default_factory=dict)
     completed_stints: Dict[int, int] = field(default_factory=dict)
     last_action_type: str = ""
@@ -211,7 +215,7 @@ def nba_get_json(url: str, timeout: int = 10):
 class NBALivePlayByPlayParser:
     @staticmethod
     def fetch_and_parse_pbp(full_nba_game_id: str, current_game_seconds_rem: float, on_court: Optional[List[int]] = None,
-                            period_now: int = 1) -> LivePBPContext:
+                            period_now: int = 1, on_court_by_team: Optional[Dict[int, List[int]]] = None) -> LivePBPContext:
         url = NBA_PBP_URL.format(game_id=full_nba_game_id)
         data = nba_get_json(url, timeout=8)
         if not data:
@@ -286,6 +290,33 @@ class NBALivePlayByPlayParser:
         live_orb_opportunities = dict(miss_by_team)
         live_drb_opportunities = {t: sum(v for ot, v in miss_by_team.items() if ot != t) for t in teams}
 
+        # Reconstruct which players were actually on the floor for each missed FG.  We know the current
+        # lineups from the box feed; walking substitutions backward recovers the lineup at earlier events.
+        # This removes the old "team misses x minutes share" approximation for normal FG opportunities.
+        player_orb_opps, player_drb_opps = {}, {}
+        if on_court_by_team and len(on_court_by_team) >= 2:
+            lineups = {int(t): set(int(x) for x in xs) for t, xs in on_court_by_team.items()}
+            team_ids = list(lineups)
+            for act in reversed(actions):
+                at = str(act.get("actionType", ""))
+                sub = str(act.get("subType", "")).lower()
+                tid = int(act.get("teamId", 0) or 0)
+                apid = int(act.get("personId", 0) or 0)
+                if at == "substitution" and tid in lineups and apid:
+                    # Reverse an "in" by removing the player; reverse an "out" by restoring him.
+                    if sub == "in":
+                        lineups[tid].discard(apid)
+                    elif sub == "out":
+                        lineups[tid].add(apid)
+                    continue
+                if at in ("2pt", "3pt") and act.get("shotResult") != "Made" and tid in lineups:
+                    for x in lineups[tid]:
+                        player_orb_opps[x] = player_orb_opps.get(x, 0) + 1
+                    opp = next((t for t in team_ids if t != tid), None)
+                    if opp is not None:
+                        for x in lineups[opp]:
+                            player_drb_opps[x] = player_drb_opps.get(x, 0) + 1
+
         # Current stint, v2026.28: (a) opening starters never have a 'sub in' event, so a player on the floor with no
         # substitution yet has been on since tip; (b) halftime (and an OT break) resets fatigue, so a stint never starts
         # before the current half. Before, an opening starter showed no stint at all and never got the fatigue term.
@@ -311,6 +342,8 @@ class NBALivePlayByPlayParser:
             live_drb=live_drb,
             live_orb_opportunities=live_orb_opportunities,
             live_drb_opportunities=live_drb_opportunities,
+            live_orb_opportunities_player=player_orb_opps,
+            live_drb_opportunities_player=player_drb_opps,
             current_stint_minutes=current_stint_minutes,
             completed_stints=completed,
             last_action_type=last_type,
@@ -433,7 +466,9 @@ class NBALiveFeedClient:
         # PREGAME_CLOCK_FIX: before tip the box shows period 1 / clock 0:00 with nobody on the floor yet.
         if period == 1 and not any(v["MIN"] > 0 for v in live_box.values()):
             secs_rem, clock_disp = 2880.0, "Q1 12:00"
-        pbp_ctx = NBALivePlayByPlayParser.fetch_and_parse_pbp(full_nba_game_id, secs_rem, on_court_home[:5] + on_court_away[:5], period)
+        pbp_ctx = NBALivePlayByPlayParser.fetch_and_parse_pbp(
+            full_nba_game_id, secs_rem, on_court_home[:5] + on_court_away[:5], period,
+            on_court_by_team={home_id: on_court_home[:5], away_id: on_court_away[:5]})
         if pbp_ctx.last_possession_team_id == away_id:
             poss_team = "AWAY"
         elif pbp_ctx.last_possession_team_id == home_id:
@@ -786,11 +821,19 @@ class InPlayMarkovEngine:
             fta = (FTA_ALPHA * fta + player_poss * obs_fta) / (FTA_ALPHA + player_poss)
             tov = (TOV_ALPHA * tov + player_poss * obs_tov) / (TOV_ALPHA + player_poss)
         team_roster = self.home_roster if p.team_id == self.state.home_team_id else self.away_roster
-        orb_total = sum(max(0.2, q.p_orb_100 * float(np.clip(self.calib.get(q.player_id, {}).get("REB", 1.0), *CALIB_TRUST))) for q in team_roster)
-        drb_total = sum(max(0.8, q.p_drb_100 * float(np.clip(self.calib.get(q.player_id, {}).get("REB", 1.0), *CALIB_TRUST))) for q in team_roster)
+        orb_total = sum(max(0.0, q.p_orb_100 * float(np.clip(self.calib.get(q.player_id, {}).get("REB", 1.0), *CALIB_TRUST))) for q in team_roster)
+        drb_total = sum(max(0.0, q.p_drb_100 * float(np.clip(self.calib.get(q.player_id, {}).get("REB", 1.0), *CALIB_TRUST))) for q in team_roster)
         on_court_share = min(1.0, player_minutes / elapsed_team_minutes) if elapsed_team_minutes > 0 else 0.0
-        oo = finite_or_default(pbp.live_orb_opportunities.get(p.team_id, 0), 0.0) * on_court_share
-        do = finite_or_default(pbp.live_drb_opportunities.get(p.team_id, 0), 0.0) * on_court_share
+        # Prefer event-time lineup exposure. Fall back to the old minutes-share approximation only when
+        # lineup reconstruction is unavailable (pregame/feed gaps).
+        if p.player_id in pbp.live_orb_opportunities_player:
+            oo = float(pbp.live_orb_opportunities_player[p.player_id])
+        else:
+            oo = finite_or_default(pbp.live_orb_opportunities.get(p.team_id, 0), 0.0) * on_court_share
+        if p.player_id in pbp.live_drb_opportunities_player:
+            do = float(pbp.live_drb_opportunities_player[p.player_id])
+        else:
+            do = finite_or_default(pbp.live_drb_opportunities.get(p.team_id, 0), 0.0) * on_court_share
         if oo > 0 and orb_total > 0:
             prior_share = orb / orb_total
             post_share = (ORB_ALPHA * prior_share + float(pbp.live_orb.get(p.player_id, box.get("ORB", 0)) or 0.0)) / (ORB_ALPHA + oo)
@@ -1180,9 +1223,11 @@ class InPlayMarkovEngine:
             s.P = [list(row) for row in off.P_cum]
             s.init = list(off.init_cum)
             s.ft = [p.p_ftpct for p in off.offense]
-            orb = np.array([max(0.2, p.p_orb_100) for p in off.offense])
-            drb = np.array([max(0.8, p.p_drb_100) for p in dfn.offense])
+            orb = np.array([max(0.0, p.p_orb_100) for p in off.offense])
+            drb = np.array([max(0.0, p.p_drb_100) for p in dfn.offense])
             tot = np.concatenate([orb, drb])
+            if tot.sum() <= 0:
+                raise ValueError("No rebound capture mass for active lineups")
             s.reb = list(np.cumsum(tot / tot.sum()))
             s.steps = self._steps_per_possession(off, orb.sum() / tot.sum())
             # Assists: team assisted-FG rate = sum of on-court D&T ast/100 over the chain's FGM/100;
