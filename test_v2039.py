@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""v2026.40 / engine 2026.30 regression checks."""
+"""v2026.40 / engine 2026.31 challenger regression checks."""
 import json, os, tempfile
 import numpy as np, pandas as pd
 import kalshi_exec_model as XM
 import fit_execution as FE
 import grade_predictions as GP
+import kalshi_results as KR
 import kalshi_nba_inplay_trader as T
 import nba_markov_engine as MG
 from kalshi_portfolio_qp import CorrelatedKellyQP
@@ -24,8 +25,31 @@ def ck(name,cond,detail=""):
     print(("  [ok] " if cond else "  [FAIL] ")+name+(f" ({detail})" if detail else ""))
     if not cond:fails.append(name)
 
-ck("versions",T.TRADER_VERSION=="v2026.40" and T.QUOTE_POLICY=="qp8" and FE.QUOTE_POLICY=="qp8" and GP.QUOTE_POLICY=="qp8" and MG.ENGINE_VERSION=="2026.30")
+ck("versions",T.TRADER_VERSION=="v2026.40" and T.QUOTE_POLICY=="qp8" and FE.QUOTE_POLICY=="qp8" and GP.QUOTE_POLICY=="qp8" and MG.ENGINE_VERSION=="2026.31")
 ck("valid numeric zero is preserved", MG.finite_or_default(0.0,5.5)==0.0 and MG.finite_or_default(np.nan,5.5)==5.5)
+
+with tempfile.TemporaryDirectory() as _idtmp:
+    _idp=os.path.join(_idtmp,"identity.csv")
+    open(_idp,"w").write("engine,cal_id,ticker,value\n2026.31,none,KXTEST-26NOV12ABC,1.5\n")
+    _idd=KR.read_log_csv(_idp)
+    ck("engine identity remains lexical at ingestion",
+       str(_idd.loc[0,"engine"])=="2026.31" and str(_idd.loc[0,"ticker"])=="KXTEST-26NOV12ABC")
+
+_zero_prof=MG.DTPlayerSkillProfile(99,"Zero Shot",1,3,78,210,100,20,.10,0,0,0,0,2,1,1,4,1,1,.60,.40,.35,.75,0,0,0)
+_zero_self=type("_Z",(object,),{"pbp":MG.LivePBPContext()})()
+_zero_mix=MG.RoleCalibratedMarkovCompiler._shot_mix(_zero_self,_zero_prof,1.0)
+ck("zero-attempt role does not receive synthetic shot volume", _zero_mix==(0.0,0.0,0.0), str(_zero_mix))
+
+_old_get=MG.nba_get_json
+try:
+    MG.nba_get_json=lambda *a,**k: {"game":{"actions":[{
+        "actionNumber":1,"actionType":"2pt","subType":"","teamId":1,"personId":99,
+        "period":1,"clock":"PT11M00.00S","shotDistance":0,"shotResult":"Missed"
+    }]}}
+    _ctx=MG.NBALivePlayByPlayParser.fetch_and_parse_pbp("x",2820.0,[99],1)
+    ck("zero-foot shot remains a rim attempt", _ctx.live_rim_fga.get(99)==1 and not _ctx.live_mid_fga.get(99,0))
+finally:
+    MG.nba_get_json=_old_get
 _epm=pd.DataFrame([{"team_id":1,"player_id":77,"player_name":"Semantic Test","p_mp_48":20.0,
     "p_mp_48_active":30.0,"p_active":.6,"p_played":.5,"p_usg":.2}])
 _box=pd.DataFrame([{"team_id":1,"player_id":77,"p_mp_48":20.0,"p_mp_48_active":30.0,
