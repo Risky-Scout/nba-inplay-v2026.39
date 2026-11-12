@@ -48,9 +48,9 @@ def clean():
         os.remove(f)
 
 
-check("versions: trader v2026.40, quote policy qp8, engine 2026.30",
+check("versions: trader v2026.40, quote policy qp8, engine 2026.31",
       T.TRADER_VERSION == "v2026.40" and T.QUOTE_POLICY == "qp8" and FE.QUOTE_POLICY == "qp8" and GP.QUOTE_POLICY == "qp8"
-      and mg.ENGINE_VERSION == "2026.30")
+      and mg.ENGINE_VERSION == "2026.31")
 
 # ── P0-1: one canonical production authorization ────────────────────────────────────────────────────────────────────
 print("1) canonical production authorization")
