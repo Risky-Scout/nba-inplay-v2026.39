@@ -50,6 +50,29 @@ try:
     ck("zero-foot shot remains a rim attempt", _ctx.live_rim_fga.get(99)==1 and not _ctx.live_mid_fga.get(99,0))
 finally:
     MG.nba_get_json=_old_get
+
+_old_get=MG.nba_get_json
+try:
+    MG.nba_get_json=lambda *a,**k: {"game":{"actions":[
+        {"actionNumber":1,"actionType":"2pt","subType":"","teamId":1,"personId":1,
+         "period":1,"clock":"PT10M00.00S","shotDistance":6,"shotResult":"Missed"},
+        {"actionNumber":2,"actionType":"substitution","subType":"out","teamId":2,"personId":10,
+         "period":1,"clock":"PT09M00.00S"},
+        {"actionNumber":3,"actionType":"substitution","subType":"in","teamId":2,"personId":11,
+         "period":1,"clock":"PT09M00.00S"},
+        {"actionNumber":4,"actionType":"2pt","subType":"","teamId":1,"personId":2,
+         "period":1,"clock":"PT08M00.00S","shotDistance":8,"shotResult":"Missed"}
+    ]}}
+    _ctx=MG.NBALivePlayByPlayParser.fetch_and_parse_pbp(
+        "x",2640.0,[1,2,3,4,5,6,7,8,9,11],1,
+        on_court_by_team={1:[1,2,3,4,5],2:[6,7,8,9,11]})
+    ck("rebound exposure follows event-time lineups",
+       _ctx.live_drb_opportunities_player.get(10)==1
+       and _ctx.live_drb_opportunities_player.get(11)==1
+       and _ctx.live_drb_opportunities_player.get(6)==2,
+       str(_ctx.live_drb_opportunities_player))
+finally:
+    MG.nba_get_json=_old_get
 _epm=pd.DataFrame([{"team_id":1,"player_id":77,"player_name":"Semantic Test","p_mp_48":20.0,
     "p_mp_48_active":30.0,"p_active":.6,"p_played":.5,"p_usg":.2}])
 _box=pd.DataFrame([{"team_id":1,"player_id":77,"p_mp_48":20.0,"p_mp_48_active":30.0,
