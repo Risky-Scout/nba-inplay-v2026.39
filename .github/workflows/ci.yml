@@ -1,7 +1,7 @@
 name: v2026.40 CI
 on:
   push:
-    branches: [main, fanatics-portfolio, fanatics-markov-2026.31-challenger]
+    branches: [main, fanatics-markov-2026.31-challenger]
   pull_request:
     branches: [main]
   workflow_dispatch:
