@@ -23,7 +23,7 @@ from datetime import datetime
 from typing import Optional
 import numpy as np
 import pandas as pd
-from kalshi_results import load_predictions, settlements
+from kalshi_results import load_predictions, settlements, read_log_csv
 from nba_markov_engine import ENGINE_VERSION
 from execution_size_authority import write_authority, size_bucket
 from nightly_reports import write_all as write_nightly_reports
@@ -87,7 +87,7 @@ def strategy_report(res: dict) -> dict:
     if not files:
         print("\n9) STRATEGY SUBSET: no kalshi_eligible_*.csv yet")
         return {"passed": False, "candidates": 0}
-    e = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+    e = pd.concat([read_log_csv(f) for f in files], ignore_index=True)
     e = e[e["engine"].astype(str) == ENGINE_VERSION] if "engine" in e.columns else e.iloc[0:0]
     if "passes_conservative" in e.columns:
         pc = e["passes_conservative"].astype(str).str.lower().isin(["true", "1"])
@@ -143,7 +143,7 @@ def fill_report(res: dict) -> dict:
     frames = []
     for f in files:
         try:
-            frames.append(pd.read_csv(f))
+            frames.append(read_log_csv(f))
         except Exception:
             pass
     if not frames:
@@ -226,7 +226,7 @@ def markout_report():
     import glob
     here = os.path.dirname(os.path.abspath(__file__))
     files = sorted(glob.glob(os.path.join(here, "kalshi_markouts_*.csv")))
-    frames = [pd.read_csv(f) for f in files if os.path.getsize(f) > 0]
+    frames = [read_log_csv(f) for f in files if os.path.getsize(f) > 0]
     if not frames:
         print("\n11) MARKOUTS: no kalshi_markouts_*.csv yet")
         return None, {"passed": False, "marks": 0}
@@ -564,7 +564,7 @@ def tier_report(res):
     contract, 30 s markout, fill rate."""
     import glob
     def rd(pat):
-        fr = [pd.read_csv(f) for f in sorted(glob.glob(os.path.join(HERE, pat))) if os.path.getsize(f) > 0]
+        fr = [read_log_csv(f) for f in sorted(glob.glob(os.path.join(HERE, pat))) if os.path.getsize(f) > 0]
         return pd.concat(fr, ignore_index=True) if fr else pd.DataFrame()
     el, q, fl, mk = rd("kalshi_eligible_*.csv"), rd("kalshi_quotes_*.csv"), rd("kalshi_fills_*.csv"), rd("kalshi_markouts_*.csv")
     if all(x.empty or "tier" not in x.columns for x in (el, q, fl)):
@@ -595,7 +595,7 @@ def tier_report(res):
 def funnel_report():
     """v2026.37 opportunity funnel summed over every kalshi_funnel_*.csv cycle row, with % of markets seen."""
     import glob
-    fr = [pd.read_csv(f) for f in sorted(glob.glob(os.path.join(HERE, "kalshi_funnel_*.csv"))) if os.path.getsize(f) > 0]
+    fr = [read_log_csv(f) for f in sorted(glob.glob(os.path.join(HERE, "kalshi_funnel_*.csv"))) if os.path.getsize(f) > 0]
     if not fr:
         print("\n16) OPPORTUNITY FUNNEL: no kalshi_funnel_*.csv yet")
         return
@@ -619,8 +619,8 @@ def size_authority_report(pol: dict) -> dict:
         a = write_authority(pd.DataFrame(), pol.get("policy_family_id"), os.path.join(here, "exec_size_authority.json"))
         print("\n15b) SIZE AUTHORITY: no qualifying qp7 terminal evidence yet")
         return a
-    q = pd.concat([pd.read_csv(f) for f in qf], ignore_index=True)
-    e = pd.concat([pd.read_csv(f) for f in ef], ignore_index=True)
+    q = pd.concat([read_log_csv(f) for f in qf], ignore_index=True)
+    e = pd.concat([read_log_csv(f) for f in ef], ignore_index=True)
     q = q[(q.get("quote_policy", "").astype(str) == QUOTE_POLICY) &
           (q.get("policy_family_id", "").astype(str) == str(pol.get("policy_family_id"))) &
           (q.get("arm", "base").fillna("base").astype(str) == "base")].copy()
@@ -646,7 +646,7 @@ def size_authority_report(pol: dict) -> dict:
     if "game" not in q:
         q["game"] = q["ticker"].astype(str).str.split("-").str[1]
     if mf:
-        m = pd.concat([pd.read_csv(f) for f in mf], ignore_index=True)
+        m = pd.concat([read_log_csv(f) for f in mf], ignore_index=True)
         if "order_id" in m and "m30" in m:
             mm = m.assign(order_id=m["order_id"].astype(str), _m30=pd.to_numeric(m["m30"], errors="coerce")).groupby("order_id")["_m30"].mean()
             q["m30"] = q["order_id"].map(mm)
