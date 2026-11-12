@@ -31,6 +31,7 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
+from kalshi_results import read_log_csv
 from scipy.optimize import minimize
 
 import kalshi_exec_model as XM
@@ -49,7 +50,7 @@ GAP_COL = XM.GAP_COL
 
 
 def _read(pattern, here=HERE):
-    fr = [pd.read_csv(f) for f in sorted(glob.glob(os.path.join(here, pattern))) if os.path.getsize(f) > 0]
+    fr = [read_log_csv(f) for f in sorted(glob.glob(os.path.join(here, pattern))) if os.path.getsize(f) > 0]
     return pd.concat(fr, ignore_index=True) if fr else pd.DataFrame()
 
 
