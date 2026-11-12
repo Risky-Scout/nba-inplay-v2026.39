@@ -65,7 +65,7 @@ Review:
 - `fit_calibration.py`
 - `fit_execution.py`
 - `grade_predictions.py`
-- `predictive_governance.py`
+- `grade_predictions.py`
 - `test_v2039.py`
 - `tests/test_v2037.py`
 - `tests/test_v2038.py`
