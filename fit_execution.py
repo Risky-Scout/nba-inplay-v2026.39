@@ -1,4 +1,4 @@
-"""Fit the execution model (v2026.37) from the trader's own LIVE quote logs and decide champion / challenger.
+"""Fit the current qp8 execution model from the trader's own LIVE quote logs and decide champion / challenger.
 
 Labels (censoring, not guessing):
   FILLED              the order has a fill event (any quantity)                                   -> 1
@@ -55,7 +55,7 @@ def _read(pattern, here=HERE):
 
 
 def label_quotes(q: pd.DataFrame, ev: pd.DataFrame) -> pd.DataFrame:
-    """qp7 labels.
+    """qp8 labels.
 
     Any observed fill is immediately a positive for the any-fill model.
     Terminal-unfilled is a negative.  Terminal fill fraction/filled quantity
