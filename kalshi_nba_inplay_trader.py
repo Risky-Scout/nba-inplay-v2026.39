@@ -137,7 +137,7 @@ OPERATIONAL_ARGS = {"once", "ws_selftest", "write_production_profile", "interval
 # v2026.38: SIZE and RISK-BUDGET settings enter policy_id but not policy_family_id. They change how many contracts are bought,
 # not which quotes are posted or at what price, and --pilot-live forces them. Were they in the family, pilot evidence could
 # never authorize a production run (different family) and a production run could never earn its own evidence (no gate).
-SIZING_ARGS = {"pilot_live", "kelly", "session_cap", "player_cap", "game_cap", "single_cap", "max_bet", "bankroll",
+SIZING_ARGS = {"pilot_live", "scaled_live", "kelly", "session_cap", "player_cap", "game_cap", "single_cap", "max_bet", "bankroll",
                "max_contracts", "pilot_session_cap", "pilot_player_cap", "cvar_limit", "no_exits"}
 OLD_PRIOR_WEIGHT = 0.15     # hierarchical prior for a new quote policy: 15% of the old policy's mean ...
 NEW_POLICY_SD = {"yes": 2.0, "no": 3.0}   # ... with deliberately wide uncertainty until qp5 earns its own marks
@@ -145,6 +145,10 @@ EXEC_MODEL_JSON = None      # set below (needs CURRENT_DIR)
 TTL_BY_STOP = {"timeout": 12, "substitution": 8, "freethrow": 5, "period": 45, "instantreplay": 15}
 TTL_GENERIC = 8             # any other dead ball
 EDGE_RULE = "lcb90>=0.5c+inv_skew"
+SCALED_WEIGHT_POLICY = "Q1-Q3:model0.40_market0.60|Q4+:model0.70_market0.30"
+def scaled_live_model_weight(period):
+    """Operator-elected scaled-live model weight: 40% through Q3, 70% from Q4/OT onward."""
+    return 0.70 if int(period) >= 4 else 0.40
 MARK_H = (5, 15, 30, 120)   # markout horizons, seconds after the fill
 PRED_COLS = ['timestamp', 'ticker', 'clock', 'player', 'stat', 'line', 'p_model_yes', 'p_mkt_yes', 'p_model_raw', 'cal_id',
              'model_mean', 'model_sd', 'proj_min', 'current', 'engine', 'p_book', 'n_books', 'p_micro', 'p_shadow', 'p_trade_yes',
@@ -2039,6 +2043,8 @@ def main():
     ap.add_argument("--pilot-live", action="store_true",
                     help="PILOT LIVE (real money, data collection): allowed without a passed gate / earned weight, but forced to "
                          "1 contract per order, 1%% session risk, 0.25%% player risk, YES only, no taker, Kelly <= 0.10")
+    ap.add_argument("--scaled-live", action="store_true",
+                    help="SCALED LIVE: real money with normal configured size caps; maker-only/YES-only; not production-authorized")
     ap.add_argument("--write-production-profile", action="store_true",
                     help="After a validated start, save this configuration as production_profile.json (later production runs "
                          "must match it)")
@@ -2071,8 +2077,10 @@ def main():
     QUOTE_MAX_AGE = max(5, args.quote_ttl - 3)
     mw_manual = "--model-weight" in sys.argv
     review_mode = bool(args.review_dt_snapshot)
-    if review_mode and (args.live or args.pilot_live):
-        sys.exit("--review-dt-snapshot is PAPER-only and cannot be combined with --live or --pilot-live.")
+    if args.pilot_live and args.scaled_live:
+        sys.exit("--pilot-live and --scaled-live are mutually exclusive.")
+    if review_mode and (args.live or args.pilot_live or args.scaled_live):
+        sys.exit("--review-dt-snapshot is PAPER-only and cannot be combined with --live, --pilot-live or --scaled-live.")
     if args.pilot_live:
         # PILOT LIVE: real money to collect execution evidence for an unvalidated configuration, at the smallest size that
         # still produces it. Never production; every limit below is forced, whatever else was passed.
@@ -2080,7 +2088,13 @@ def main():
         args.no_exits = True        # exits sell at the bid (taker): not in a maker-only pilot; positions settle
         args.kelly = min(args.kelly, 0.10)
         args.session_cap, args.player_cap = min(args.session_cap, 0.01), min(args.player_cap, 0.0025)
+    elif args.scaled_live:
+        args.live, args.taker, args.allow_no, args.no_probe = True, False, False, 0
+        args.no_exits = True
+        args.kelly = min(args.kelly, 0.10)
     args.max_contracts = 1 if args.pilot_live else None
+    if args.scaled_live and mw_manual:
+        sys.exit("--scaled-live refuses a manual --model-weight; use earned calibration/local authority.")
     if args.live and mw_manual and not (args.override_model_weight_risk or args.pilot_live):
         sys.exit("--model-weight with --live is refused: a manual weight bypasses the evidence hierarchy. The live weight comes "
                  "only from calibration.json (current engine, trade regime, out of sample). (--override-model-weight-risk exists.)")
@@ -2098,6 +2112,9 @@ def main():
     if args.pilot_live:
         print("#" * 92 + "\n PILOT LIVE: REAL MONEY, NOT PRODUCTION. Unvalidated configuration collecting execution evidence: 1 contract per\n"
               f" order, session risk {args.session_cap:.0%}, player risk {args.player_cap:.2%}, YES only, no taker, Kelly {args.kelly:.2f}.\n" + "#" * 92)
+    if args.scaled_live:
+        print("#" * 92 + "\n SCALED LIVE: REAL MONEY, NOT PRODUCTION-AUTHORIZED. Pilot one-contract / 1% caps lifted; hard safety gates remain active.\n" + "#" * 92)
+        print(" SCALED-LIVE PREDICTIVE BLEND: Q1-Q3 = 40% model / 60% market; Q4/OT = 70% model / 30% market")
     mg.MATCHUP_STRENGTH = float(np.clip(args.matchup_strength, 0.0, 1.0))
     shadow_strength = 1.0 if mg.MATCHUP_STRENGTH < 0.5 else 0.0   # the A/B arm is the other end   # refresh before the exchange expiry, so the bot never "keeps" an expired quote
 
@@ -2217,12 +2234,21 @@ def main():
                  "alpha (default), or --as-spread-frac g with --exec-alpha-no-c 0 --exec-alpha-yes-c 0.")
     exec_model = load_exec_model()
     challenger = XM.load_model(CHALLENGER_JSON, QUOTE_POLICY)
-    run_is_production = bool(args.live and not args.pilot_live)
+    run_is_production = bool(args.live and not args.pilot_live and not args.scaled_live)
     run_is_live = bool(args.live)
     POLICY["exec_model_id"] = exec_model["exec_model_id"] if exec_model else "none"
     POLICY["exec_prior_id"] = file_hash(EXEC_PRIORS_JSON) if (prior_src.startswith("exec_priors") or prior_src.startswith(QUOTE_POLICY)) else \
         hashlib.sha256(json.dumps(exec_prior, sort_keys=True).encode()).hexdigest()[:12]
     POLICY["policy_id"], POLICY["policy_family_id"], policy_fields = policy_identity(args, POLICY["exec_model_id"], POLICY["exec_prior_id"])
+    if args.scaled_live:
+        _swp = SCALED_WEIGHT_POLICY.encode()
+        POLICY["policy_id"] = hashlib.sha256((POLICY["policy_id"] + "|" + SCALED_WEIGHT_POLICY).encode()).hexdigest()[:12]
+        POLICY["policy_family_id"] = hashlib.sha256((POLICY["policy_family_id"] + "|" + SCALED_WEIGHT_POLICY).encode()).hexdigest()[:12]
+        # Execution-policy identity for the scaled-live hotfix.
+        if args.scaled_live:
+            SCALED_EXECUTION_FIX_V3 = "scaled_final_band_postonly_guard_50ms_v3"
+            POLICY["policy_id"] = hashlib.sha256((POLICY["policy_id"] + "|" + SCALED_EXECUTION_FIX_V3).encode()).hexdigest()[:12]
+            POLICY["policy_family_id"] = hashlib.sha256((POLICY["policy_family_id"] + "|" + SCALED_EXECUTION_FIX_V3).encode()).hexdigest()[:12]
     size_authority = load_authority(SIZE_AUTH_JSON, POLICY["policy_family_id"])
     shock_sds = dict(model=args.model_risk_sd, stat=args.stat_risk_sd, game=args.game_risk_sd, team=args.team_risk_sd,
                      player=args.player_risk_sd)
@@ -2292,14 +2318,14 @@ def main():
         production_ok = not why_not
         gate_status = ("PILOT (authorization checks: " + ("passed" if production_ok else "not passed") + ")") if args.pilot_live \
             else ("PASSED (production)" if production_ok else "not passed")
-        if not production_ok and not args.pilot_live:
+        if not production_ok and not (args.pilot_live or args.scaled_live):
             logger.error("PRODUCTION AUTHORIZATION FAILED:\n  - " + "\n  - ".join(why_not) +
                          "\n  --override-gate / --override-model-weight-risk no longer authorize production. To collect live "
                          "evidence at minimum size use --pilot-live; otherwise run without --live (paper).")
             sys.exit(1)
         if not production_ok:
-            logger.warning("PILOT LIVE (not production) because:\n  - " + "\n  - ".join(why_not))
-        if production_ok and not args.pilot_live and os.path.exists(PROD_PROFILE_JSON) and not args.write_production_profile:
+            logger.warning(("SCALED LIVE" if args.scaled_live else "PILOT LIVE") + " (not production-authorized) because:\n  - " + "\n  - ".join(why_not))
+        if production_ok and run_is_production and os.path.exists(PROD_PROFILE_JSON) and not args.write_production_profile:
             with open(PROD_PROFILE_JSON) as _pf:
                 _prof = json.load(_pf)
             _now = production_profile(args, cal_id, min_period, side_on)
@@ -2307,7 +2333,7 @@ def main():
             if _diff:
                 logger.error("PRODUCTION PROFILE MISMATCH (production_profile.json):\n  " + "\n  ".join(_diff))
                 sys.exit(1)
-        if production_ok and not args.pilot_live and args.write_production_profile:
+        if production_ok and run_is_production and args.write_production_profile:
             with open(PROD_PROFILE_JSON, "w") as _pf:
                 json.dump(production_profile(args, cal_id, min_period, side_on), _pf, indent=2)
             logger.info("production_profile.json written: later production runs must match it.")
@@ -2359,8 +2385,9 @@ def main():
     else:
         dt_client = mg.DunksAndThreesClient(DT_API_KEY)
     base_kelly_live = min(max(0.0, float(args.kelly)), 0.10) if args.live else max(0.0, float(args.kelly))
-    prediction_health = 1.0 if run_is_production else (0.75 if args.pilot_live else 1.0)
-    execution_health = 1.0 if exec_model else (0.65 if args.pilot_live else 1.0)
+    _unvalidated_live = bool(args.pilot_live or args.scaled_live)
+    prediction_health = 1.0 if run_is_production else (0.75 if _unvalidated_live else 1.0)
+    execution_health = 1.0 if exec_model else (0.65 if _unvalidated_live else 1.0)
     effective_kelly = base_kelly_live * prediction_health * execution_health if args.adaptive_kelly else base_kelly_live
     effective_kelly = min(base_kelly_live, max(0.0, effective_kelly))
     qp = CorrelatedKellyQP(session_cap=args.session_cap, game_cap=args.game_cap, single_cap=args.single_cap,
@@ -2382,7 +2409,8 @@ def main():
                    cell_weights=cell_w, pool_weight_sd=w_sd, min_period_used=min_period, run_id=RUN_ID, quote_policy=QUOTE_POLICY,
                    edge_rule=EDGE_RULE, cvar_limit=args.cvar_limit, no_enabled=side_on["no"], yes_enabled=side_on["yes"],
                    exec_priors=exec_prior, exec_prior_source=prior_src, research_overrides=research,
-                   run_mode=("live_review" if review_mode else ("research" if research else ("pilot" if args.pilot_live else ("production" if args.live else "paper")))),
+                   run_mode=("live_review" if review_mode else ("research" if research else ("pilot" if args.pilot_live else ("scaled_live" if args.scaled_live else ("production" if args.live else "paper"))))),
+                   scaled_weight_policy=(SCALED_WEIGHT_POLICY if args.scaled_live else None),
                    stat_weights=stat_w, book_weight=book_w, books_enabled=books.enabled, code_hash=code_hash,
                    exec_model=bool(exec_model), gate_status=gate_status, ws=kalshi.ws is not None,
                    policy_id=POLICY["policy_id"], policy_family_id=POLICY["policy_family_id"], exec_model_id=POLICY["exec_model_id"],
@@ -3062,6 +3090,8 @@ def main():
                             if p_model <= p_mkt:
                                 continue              # the model does not prefer this side
                             funnel.add("positive_model_signal")
+                            if args.scaled_live:
+                                w_m = scaled_live_model_weight(st.period)
                             if w_m <= 0.0:
                                 n_gate["no_model_weight"] = n_gate.get("no_model_weight", 0) + 1
                                 funnel.block(f"no local authority ({auth['source']})")
@@ -3072,7 +3102,7 @@ def main():
                                 continue   # weight 0 = no authority for this cell: no fundamental directional entry
                             funnel.add("local_authority_nonzero")
                             tier = auth["tier"]
-                            if tier == "RESEARCH" and run_is_live:
+                            if tier == "RESEARCH" and run_is_live and not args.scaled_live:
                                 n_gate["research_tier"] = n_gate.get("research_tier", 0) + 1
                                 funnel.block("RESEARCH tier (no live capital)")
                                 decision_log(game=st.matchup_title, clock=st.clock_display, player=m.player_name, player_id=m.player_id,
@@ -3111,6 +3141,9 @@ def main():
                                              p_model=round(p_model,4), p_mkt=round(p_mkt,4), p_book=round(p_bk,4),
                                              reason="SPORTSBOOK_DISAGREEMENT", stage="EXTERNAL_MARKET_GATE")
                                 continue
+                            if args.scaled_live:
+                                w_m = scaled_live_model_weight(st.period)
+                                w_b = 0.0  # exact model/market schedule; no third-source dilution in scaled-live
                             p_used = pool3(p_model, p_mkt, p_bk, w_m, w_b) + (dlt if side == "yes" else -dlt)
                             p_used = float(np.clip(p_used, 1e-4, 1 - 1e-4))
                             bid, ask = (m.yes_bid, m.yes_ask) if side == "yes" else (m.no_bid, m.no_ask)
@@ -3175,7 +3208,7 @@ def main():
                                 "team_id": team_of.get(m.player_id, ""), "period": st.period, "aggr": round(res["aggr"], 3),
                                 "tier": tier, "confidence": (auth["confidence"] if tier == "PRODUCTION" else 1.0), "cell": auth["cell_key"],
                                 "authority_weight": w_m, "gap_bin": gap_bin_of_value(mc["gap_y"]), "fee_c": res["fee"], "ctx": ctx,
-                                "max_contracts": 1 if (res["arm"] != "base" or args.max_contracts == 1 or is_probe or tier != "PRODUCTION") else None}
+                                "max_contracts": 1 if (res["arm"] != "base" or args.max_contracts == 1 or is_probe or (tier != "PRODUCTION" and not args.scaled_live)) else None}
                             cand["challenger_pf"], cand["challenger_qev"] = challenger_preds(ctx, bid, ask, res["px"], cand["alpha_c"], res["fee"])
                             decision_log(game=st.matchup_title, clock=st.clock_display, player=m.player_name, player_id=m.player_id,
                                          stat=m.stat, line=m.line, ticker=m.ticker, side=side, phase=phase_now, period=st.period,
@@ -3282,6 +3315,8 @@ def main():
                     """PILOT budget (v2026.37): every non-PRODUCTION candidate shares the pilot session budget
                     (--pilot-session-cap) and a per-player pilot budget (--pilot-player-cap), net of open pilot exposure
                     (filled + pending + resting), at full notional."""
+                    _session_cap = args.session_cap if args.scaled_live else args.pilot_session_cap
+                    _player_cap = args.player_cap if args.scaled_live else args.pilot_player_cap
                     open_p, open_pp = 0.0, {}
                     for _v in risk_view.values():
                         if _v.get("tier", "PRODUCTION") != "PRODUCTION":
@@ -3290,12 +3325,12 @@ def main():
                     idx = [i for i, c in enumerate(cands) if c.get("tier") != "PRODUCTION"]
                     if not idx:
                         return []
-                    out = [{"members": idx, "room": max(0.0, args.pilot_session_cap - open_p / args.bankroll)}]
+                    out = [{"members": idx, "room": max(0.0, _session_cap - open_p / args.bankroll)}]
                     by_pl: Dict[str, list] = {}
                     for i in idx:
                         by_pl.setdefault(cands[i]["player_name"], []).append(i)
                     for pl, ii in by_pl.items():
-                        out.append({"members": ii, "room": max(0.0, args.pilot_player_cap - open_pp.get(pl, 0.0) / args.bankroll)})
+                        out.append({"members": ii, "room": max(0.0, _player_cap - open_pp.get(pl, 0.0) / args.bankroll)})
                     return out
 
                 orders = qp.solve_allocations(candidates, bankroll=args.bankroll, max_bet_usd=args.max_bet, positions=risk_view,
@@ -3349,6 +3384,10 @@ def main():
                         else:
                             res, _w = (price_side(ctx, sbid, sask, pm, pu, _tox) if sask == o["price_cents"] else (None, "ask changed"))
                         if res is None or res.get("rejected") or res.get("is_maker", True) != o["is_maker"]:
+                            n_send["repriced_out"] += 1
+                            continue
+                        # SCALED LIVE: hard configured price band after fresh-book quote optimization.
+                        if args.scaled_live and not (args.price_min <= int(res["px"]) <= args.price_max):
                             n_send["repriced_out"] += 1
                             continue
                         if res["px"] != o["price_cents"]:
@@ -3536,12 +3575,32 @@ def main():
                         f"edge if filled {bet['expected_edge_c']:+.2f}c x P(fill) {bet.get('fill_prob', 1.0):.2f} | "
                         f"Kelly {bet['joint_kelly_fraction'] * 100:.2f}% | EV ${bet['ev_usd']:.2f}")
                     # exchange-side expiry is the backstop a few seconds after the state-dependent life
+                    # SCALED LIVE: final hard band and maker-book guard immediately before submission.
+                    if args.scaled_live:
+                        _send_px = int(round(bet["price_cents"]))
+                        if not (args.price_min <= _send_px <= args.price_max):
+                            n_send["repriced_out"] += 1
+                            logger.warning("[SCALED LIVE BLOCK] final price outside %d-%d cents: %s @ %d", args.price_min, args.price_max, bet["ticker"], _send_px)
+                            continue
+                        if bet.get("is_maker", True):
+                            _send_tb = kalshi.top_of_book(bet["ticker"])
+                            if _send_tb is None:
+                                n_send["no_book"] += 1
+                                continue
+                            _send_yb, _send_ya = int(round(_send_tb[0])), int(round(_send_tb[2]))
+                            if not (1 <= _send_yb < _send_ya <= 99):
+                                n_send["no_book"] += 1
+                                continue
+                            _send_bid, _send_ask = side_book(_send_yb, _send_ya, bet["side"])
+                            if _send_px >= _send_ask:
+                                n_send["would_cross"] += 1
+                                continue
                     _committed = book.place(bet, mkt_of[(bet["ticker"], bet["side"])], count, int(min(ttl, int(bet.get("ttl") or ttl) + 3)))
                     if _committed > 0:
                         n_send["sent"] += 1
                         funnel.add("quotes_posted")
                     cash -= _committed
-                    time.sleep(0.25)
+                    time.sleep(0.05 if args.scaled_live else 0.25)
                 funnel.posted(n_send["sent"])
                 if orders or any(n_send.values()):
                     logger.info(f"Pre-send check: {n_send}")
