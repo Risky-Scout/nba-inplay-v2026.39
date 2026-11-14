@@ -149,3 +149,23 @@ Any future real-money production start must earn the required predictive and exe
 - PAPER fill simulation is research evidence, not a substitute for real queue/fill evidence.
 
 This repository is a quantitative-research and engineering portfolio project. It does not claim guaranteed profitability.
+
+## Credential handling
+
+Keep private PEM files, API credentials and runtime trading logs local. Do not paste
+credentials into source files, pull requests, issues, or logs. A public-key SHA-256
+fingerprint can identify an owner's signing key without disclosing that key.
+
+To scan the staged index without printing suspected values:
+
+```bash
+python3 scripts/audit_repository_secrets.py
+```
+
+Install the optional local pre-commit check in each checkout with
+`git config --local core.hooksPath .githooks`. CI also scans tracked content.
+To audit reachable local Git history, use
+`python3 scripts/audit_repository_secrets.py --history`. These pattern checks do
+not cover every secret format or replace GitHub secret scanning and push protection.
+Owner-only signing-key authorization is pending the owner's public-key fingerprint;
+no allowlist has been fabricated from GitHub usernames or file paths.

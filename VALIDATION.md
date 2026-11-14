@@ -186,3 +186,16 @@ execution uncertainty holds the deployed scaler/drift fixed, so it does not capt
 all nuisance-model or structural error. Existing shared model-risk factors and
 conservative exposure controls remain necessary. No maker-price or Kelly tuning
 has earned promotion from real historical evidence.
+
+## Credential audit
+
+A value-redacting scan found no recognized credential patterns in 620 reachable
+Git blobs and 45 tracked files before the credential-protection follow-up. It checks
+private-key blocks, common GitHub/AWS token formats and credential literals. It does
+not inspect ignored credentials or GitHub Actions secret values, and cannot prove
+that every possible secret format is absent. No suspect values are printed.
+
+The follow-up adds a staged-index pre-commit check, CI scanning, redaction tests,
+and ignore rules for additional key containers, runtime CSVs, the actual order
+journal filename, review outputs and local provider snapshots. The commit hook is
+configured in this cloud checkout; Mac checkouts require local installation.
