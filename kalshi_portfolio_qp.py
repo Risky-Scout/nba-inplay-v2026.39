@@ -48,7 +48,10 @@ class CorrelatedKellyQP:
         self.team_sd, self.player_sd = team_sd, player_sd   # v2026.36 model-risk factors: team rotation, player role
         self.game_cap = game_cap
         self.single_cap = single_cap
-        self.gamma = 1.0 / kelly_fraction if kelly_fraction else (2.0 if half_kelly else 1.0)   # fraction of full Kelly
+        if kelly_fraction is not None and (not np.isfinite(kelly_fraction) or not 0 <= kelly_fraction <= 1):
+            raise ValueError("kelly_fraction must be finite and in [0, 1]")
+        self.kelly_fraction = (0.5 if half_kelly else 1.0) if kelly_fraction is None else kelly_fraction
+        self.gamma = 1.0 / self.kelly_fraction if self.kelly_fraction > 0 else np.inf   # fraction of full Kelly
         # Favorites are low-variance, so Kelly sizes them to the cap on small edges; a model error there
         # costs the full stake. Taper: full cap at <= 50c, 50% at 75c, 30% at 85c.
         self.fav_taper = fav_taper
@@ -106,7 +109,7 @@ class CorrelatedKellyQP:
         the PILOT session budget and per-player pilot budgets), enforced in the continuous and the integer stage.
         Candidate fields: confidence (default 1), effective_fill_fraction (preferred; fallback fill_prob/default 1), max_contracts."""
         self.last_stats = {"positive": 0, "below_one": 0, "rounded_up": 0}
-        if not candidates or bankroll <= 0:
+        if not candidates or bankroll <= 0 or self.kelly_fraction == 0:
             return []
         n = len(candidates)
         p = np.array([c["win_prob"] for c in candidates])
@@ -146,7 +149,7 @@ class CorrelatedKellyQP:
         upper = np.maximum(0.0, self.single_cap * taper - e)
         # per-candidate contract ceiling (pilot orders, exploration arms, probes: 1) enforced INSIDE the optimizer, so
         # the budget a capped candidate cannot use is re-allocated instead of being cut away afterwards (review fix)
-        maxc = np.array([float(c["max_contracts"]) if c.get("max_contracts") else np.inf for c in candidates])
+        maxc = np.array([max(0.0, float(c["max_contracts"])) if c.get("max_contracts") is not None else np.inf for c in candidates])
         upper = np.minimum(upper, np.where(np.isfinite(maxc), maxc * cost / bankroll, np.inf))
         games: Dict[str, List[int]] = {}
         for i, c in enumerate(candidates):

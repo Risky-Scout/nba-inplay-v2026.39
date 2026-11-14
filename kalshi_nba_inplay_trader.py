@@ -56,6 +56,9 @@ from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 
+# Research branch interlock: changing this requires separate live-trading authorization.
+LIVE_TRADING_ENABLED = False
+
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.append(CURRENT_DIR)
@@ -542,11 +545,21 @@ def cvar_scale(orders: List[dict], others: List[dict], bankroll: float, limit_fr
     with eps the shared model-error shocks (model_shocks): basketball outcome AND misspecification uncertainty.
     Finds the largest alpha in [0,1] such that CVaR95 of (others + alpha x new orders, rounded DOWN) <= limit."""
     vecs = [it["outcome"] for it in orders + others if it.get("outcome") is not None]
-    n = min((len(v) for v in vecs), default=0)
-    if n == 0 or not orders:
+    n = min((len(v) for v in vecs), default=1)
+    if n == 0:
+        return [], {"alpha": 0.0, "cvar95": None, "p99": None, "note": "empty outcome scenarios"}
+    if not orders:
         return orders, {"alpha": 1.0, "cvar95": None, "p99": None}
     eps_o = model_shocks(orders + others, n, shock_sds)
     eps_new, eps_oth = eps_o[:len(orders)], eps_o[len(orders):]
+    # Engine calls often reuse a simulation seed. Equal row indices across distinct games
+    # are not joint basketball scenarios. Preserve each game's joint player/strike paths,
+    # but independently couple games; shared model-error shocks remain shared above.
+    game_keys = {str(it.get("game_key", "unknown")) for it in orders + others}
+    permutations = {}
+    if len(game_keys) > 1:
+        for key in sorted(game_keys):
+            permutations[key] = np.random.default_rng(zlib.crc32(key.encode())).permutation(n)
 
     def pnl(items, eps, scale=None):
         tot = np.zeros(n)
@@ -555,15 +568,17 @@ def cvar_scale(orders: List[dict], others: List[dict], bankroll: float, limit_fr
             if k <= 0:
                 continue
             o = it.get("outcome")
-            win = np.zeros(n) if o is None else np.asarray(o[:n], dtype=float)   # no outcome vector: assume full loss
+            win = np.zeros(n) if o is None else np.nan_to_num(np.asarray(o[:n], dtype=float), nan=0.0, posinf=0.0, neginf=0.0).clip(0, 1)   # no outcome vector: assume full loss
+            if permutations:
+                win = win[permutations[str(it.get("game_key", "unknown"))]]
             tot += k * ((100.0 * win - it["unit_c"]) / 100.0 - eps[j])
         return tot
 
     base = pnl(others, eps_oth)
     def risk(alpha):
         L = -(base + pnl(orders, eps_new, alpha))
-        var = np.quantile(L, q)
-        return float(L[L >= var].mean()), float(np.quantile(L, 0.99))
+        from risk_metrics import expected_shortfall
+        return expected_shortfall(L, q), float(np.quantile(L, 0.99))
     limit = limit_frac * bankroll
     cv1, p991 = risk(1.0)
     if cv1 <= limit:
@@ -582,7 +597,9 @@ def cvar_scale(orders: List[dict], others: List[dict], bankroll: float, limit_fr
         k = math.floor(o["contracts"] * lo + 1e-9)
         if k >= 1:
             o = dict(o, contracts=k, risk_usd=round(k * o["unit_c"] / 100.0, 2),
-                     ev_usd=round(k * float(o.get("expected_edge_c", 0.0)) / 100.0, 2))
+                     ev_usd=round(k * float(o.get("effective_fill_fraction", o.get("fill_prob", 1.0))) *
+                                  float(o.get("confidence", 1.0)) * float(o.get("expected_edge_c", 0.0)) / 100.0, 2),
+                     ev_if_filled_usd=round(k * float(o.get("expected_edge_c", 0.0)) / 100.0, 2))
             out.append(o)
     cv, p99 = risk(lo)          # re-evaluated on the rounded quantities
     return out, {"alpha": round(lo, 4), "cvar95": round(cv, 2), "p99": round(p99, 2)}
@@ -779,7 +796,7 @@ class KalshiClient:
 
     @property
     def can_trade(self) -> bool:
-        return (not self.paper) and self._private_key is not None and bool(self.key_id)
+        return LIVE_TRADING_ENABLED and (not self.paper) and self._private_key is not None and bool(self.key_id)
 
     def _auth(self, method: str, path: str) -> Dict[str, str]:
         return get_auth_headers(self.key_id, self._private_key, method, f"/trade-api/v2{path}")
@@ -952,6 +969,8 @@ class KalshiClient:
     def send_order(self, m: KalshiMarket, side: str, price_cents: int, count: int, is_maker: bool,
                    ttl_sec: int) -> Tuple[Optional[str], float]:
         """Returns (order_id, contracts filled immediately). Live only."""
+        if not self.can_trade:
+            return None, 0.0
         path = "/portfolio/events/orders"
         yes_px = price_cents if side == "yes" else 100 - price_cents
         payload = {
@@ -982,6 +1001,8 @@ class KalshiClient:
 
     def send_exit(self, m: KalshiMarket, side: str, price_cents: int, count: int) -> Tuple[Optional[str], float]:
         """Sell a held position: IOC + reduce_only, so it can only shrink the position, never flip it."""
+        if not self.can_trade:
+            return None, 0.0
         path = "/portfolio/events/orders"
         yes_px = price_cents if side == "yes" else 100 - price_cents
         payload = {"ticker": m.ticker, "client_order_id": str(uuid.uuid4()),
@@ -1085,6 +1106,8 @@ class KalshiClient:
         return (ask * qb + bid * qa) / (qb + qa) / 100.0
 
     def cancel_order(self, order_id: str, ticker: str) -> bool:
+        if not self.can_trade:
+            return False
         path = f"/portfolio/events/orders/{order_id}"
         try:
             resp = self._session.delete(f"{self.BASE}{path}", headers=self._auth("DELETE", path),
@@ -2073,6 +2096,8 @@ def main():
     ap.add_argument("--max-strikes", type=int, default=1, help="Strikes per (player, stat, side) offered to the optimizer")
     ap.add_argument("--starve-min", type=float, default=30.0, help="Print the OPPORTUNITY STARVATION report after this many quiet minutes")
     args = ap.parse_args()
+    if not LIVE_TRADING_ENABLED and (args.live or args.pilot_live or args.scaled_live):
+        ap.error("Live trading is disabled in this research branch; separate authorization is required.")
     global QUOTE_MAX_AGE
     QUOTE_MAX_AGE = max(5, args.quote_ttl - 3)
     mw_manual = "--model-weight" in sys.argv

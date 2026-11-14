@@ -23,3 +23,5 @@ jobs:
         run: python tests/test_v2037.py
       - name: v2026.38 regression
         run: python tests/test_v2038.py
+      - name: As-of replay and capital-preservation invariants
+        run: python tests/test_research_validation.py

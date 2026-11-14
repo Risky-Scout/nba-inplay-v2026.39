@@ -659,7 +659,7 @@ CALIB_MULT_BOUNDS = (0.50, 2.00)
 CALIB_MAX_ITER = 3
 CALIB_DAMPING = 0.65
 CALIB_VERIFY_TOL = 0.08       # fresh-seed mean must land within 8% of D&T target to be tradeable
-ENGINE_VERSION = "2026.31"    # calibrations are only valid for the engine version they were fitted on
+ENGINE_VERSION = "2026.32"    # calibrations are only valid for the engine version they were fitted on
 # v2026.25: the extra matchup layer (DEPM, rim protection, steal pressure on top of D&T's GAME-OPTIMIZED skills, which
 # already account for opponents) is a coefficient, not a switch. Production default 0 = D&T only, until the logged A/B
 # (p_shadow = strength 1) earns it weight out of sample. Older code used MATCHUP_LAYER (True == strength 1).
@@ -705,7 +705,7 @@ def _load_validated_engine_artifacts():
             x = d.get("params", {})
             for name in ("SHOT_MIX_KAPPA","ASSIST_ALPHA","PACE_TAU0","MINUTES_EVIDENCE_K",
                          "FTA_ALPHA","TOV_ALPHA","ORB_ALPHA","DRB_ALPHA"):
-                if name in x and np.isfinite(float(x[name])):
+                if name in x and np.isfinite(float(x[name])) and float(x[name]) > 0:
                     globals()[name] = float(x[name])
     except Exception:
         pass
@@ -907,7 +907,9 @@ class InPlayMarkovEngine:
         out = []
         for s, L in enumerate(seg_lens):
             lineup = [k for k in cur if ok(k) and rem[k] >= 0.5 * L]
-            bench = sorted([k for k in range(len(roster)) if k not in lineup], key=rank)
+            bench = sorted([k for k in range(len(roster)) if k not in lineup and ok(k)], key=rank)
+            if len(lineup) + len(bench) < 5:
+                raise ValueError("Fewer than five available players in a rotation scenario")
             while len(lineup) < 5 and bench:
                 lineup.append(bench.pop(0))
             if len(lineup) == 5:
@@ -990,6 +992,8 @@ class InPlayMarkovEngine:
         return float(v.sum() / max(0.05, 1.0 - miss * orb_share))
 
     def run_monte_carlo(self, n_sims: int = 2000, seed: int = 42) -> Dict[str, any]:
+        if not isinstance(n_sims, int) or n_sims < 1:
+            raise ValueError("n_sims must be a positive integer")
         st = self.state
         T0 = float(max(0.0, st.seconds_remaining_in_game))
         all_players = {p.player_id: p for p in (self.home_roster + self.away_roster)}
@@ -1052,6 +1056,14 @@ class InPlayMarkovEngine:
         h_role = np.array([1.0 if is_starter_now(p, st.live_box.get(p.player_id), gs) else -1.0 for p in self.home_roster])
         a_role = np.array([1.0 if is_starter_now(p, st.live_box.get(p.player_id), gs) else -1.0 for p in self.away_roster])
         packs, scen_packs, scen_blowout_packs, min_proj = {}, [], [], {}
+        # Availability is a scenario-level shock, shared by all stats and teammates' minutes.
+        # Once the game starts, observed eligibility supersedes pregame probabilities.
+        def availability(roster):
+            return np.array([1.0 if gs or "ACTIVE" in st.live_box.get(p.player_id, {}) else
+                             float(np.clip(finite_or_default(p.p_active, 1.0), 0, 1)) for p in roster])
+        hav, aav = availability(self.home_roster), availability(self.away_roster)
+        hu = np.array([srng.permutation((np.arange(n_scen) + 0.5) / n_scen) for _ in hE]).T
+        au = np.array([srng.permutation((np.arange(n_scen) + 0.5) / n_scen) for _ in aE]).T
         seg_lens = segment_lengths(T0)
         seg_start = [0.0]
         for L in seg_lens[:-1]:
@@ -1067,8 +1079,12 @@ class InPlayMarkovEngine:
                 aEj = aE * np.exp(sig * za[j] - sig * sig / 2 + a_role * sig_r * ca[j] - sig_r * sig_r / 2)
                 ha = _water_fill(hEj, hC, S_team)
                 aa = _water_fill(aEj, aC, S_team)
+            # Do not force an unavailable player back through the soft-cap relaxation.
+            hcj, acj = np.where(hu[j] < hav, hC, 0.0), np.where(au[j] < aav, aC, 0.0)
+            ha = _water_fill(hEj, hcj, S_team)
+            aa = _water_fill(aEj, acj, S_team)
             if FOULOUT_HAZARD:
-                for roster, Ej, C, which in ((self.home_roster, hEj, hC, "h"), (self.away_roster, aEj, aC, "a")):
+                for roster, Ej, C, which in ((self.home_roster, hEj, hcj, "h"), (self.away_roster, aEj, acj, "a")):
                     alloc = ha if which == "h" else aa
                     caps = self._foulout_caps(roster, alloc, frng)
                     if np.isfinite(caps).any():
@@ -1083,17 +1099,21 @@ class InPlayMarkovEngine:
             a_blow = self._schedule(self.away_roster, aa, st.on_court_away, T0, False, seg_lens, blowout=True)
             seg_packs, blow_packs = [], []
             for s, (hs, as_, hb, ab) in enumerate(zip(h_sched, a_sched, h_blow, a_blow)):
-                clutch = (T0 - seg_start[s]) <= 300.0 and abs(diff) <= 10
-                key = (hs, as_, clutch)
-                if key not in packs:
-                    packs[key] = self._compile_pair([self.home_roster[k] for k in hs], [self.away_roster[k] for k in as_],
-                                                    clutch, id_to_idx, sec_per_poss)
-                seg_packs.append(packs[key])
-                bkey = (hb, ab, False)
-                if bkey not in packs:
-                    packs[bkey] = self._compile_pair([self.home_roster[k] for k in hb], [self.away_roster[k] for k in ab],
-                                                     False, id_to_idx, sec_per_poss)
-                blow_packs.append(packs[bkey])
+                def variants(hs, as_):
+                    pair = []
+                    for clutch in (False, True):
+                        if clutch and T0 - seg_start[s] > 300 and s < len(seg_lens) - 1:
+                            pair.append(pair[0])  # No clutch state possible in this segment.
+                            continue
+                        key = (hs, as_, clutch)
+                        if key not in packs:
+                            packs[key] = self._compile_pair([self.home_roster[k] for k in hs],
+                                                           [self.away_roster[k] for k in as_],
+                                                           clutch, id_to_idx, sec_per_poss)
+                        pair.append(packs[key])
+                    return pair
+                seg_packs.append(variants(hs, as_))
+                blow_packs.append(variants(hb, ab))
             scen_packs.append(seg_packs)
             scen_blowout_packs.append(blow_packs)
             for roster, sched in ((self.home_roster, h_sched), (self.away_roster, a_sched)):
@@ -1128,7 +1148,7 @@ class InPlayMarkovEngine:
             ot_left, in_ot = MAX_OT, False
             poss = poss0 if poss0 >= 0 else (0 if R() < 0.5 else 1)
             si = 0
-            pk = seg_packs[0]
+            pk = seg_packs[0][int(T0 <= 300 and abs(diff) <= 10)]
             sd = pk[poss]
             h = min(4, BIS(sd.init, R()))
             while True:
@@ -1138,7 +1158,7 @@ class InPlayMarkovEngine:
                     if ot_left > 0 and h0 + sum(pts[i] for i in h_idx) == a0 + sum(pts[i] for i in a_idx):
                         ot_left, in_ot, clock = ot_left - 1, True, 300.0
                         si = last
-                        pk = seg_packs[last]
+                        pk = seg_packs[last][1]
                         poss = 0 if R() < 0.5 else 1          # overtime opens with a jump ball, not the last possession
                         sd = pk[poss]
                         h = min(4, BIS(sd.init, R()))
@@ -1151,7 +1171,7 @@ class InPlayMarkovEngine:
                     si = s_new
                     sim_margin = (h0 + sum(pts[i] for i in h_idx)) - (a0 + sum(pts[i] for i in a_idx))
                     p_blow = pathwise_blowout_probability(sim_margin, clock)
-                    pk = blow_packs[si] if R() < p_blow else seg_packs[si]
+                    pk = (blow_packs[si] if R() < p_blow else seg_packs[si])[int(clock <= 300 and abs(sim_margin) <= 10)]
                     sd = pk[poss]
                 nx = BIS(sd.P[h], R())
                 if nx < 5:

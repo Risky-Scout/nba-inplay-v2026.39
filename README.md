@@ -1,7 +1,7 @@
 # NBA In-Play Pricing & Market-Making System
 
 **Author:** Joseph Shackelford, ASA, MAAA  
-**Trader:** v2026.40 · **Probability engine:** 2026.31 · **Execution policy:** qp8
+**Trader:** v2026.40 · **Probability engine:** 2026.32 · **Execution policy:** qp8
 
 An end-to-end research system for real-time NBA player-prop pricing, execution, portfolio construction, and model governance.
 
@@ -10,10 +10,11 @@ An end-to-end research system for real-time NBA player-prop pricing, execution, 
 | Area | Status |
 |---|---|
 | Trader | v2026.40 |
-| Probability engine | 2026.31 |
+| Probability engine | 2026.32 |
 | Quote policy | qp8 |
 | Code path | current |
-| Full production authority | not assumed; must be earned from current evidence |
+| Live trading | disabled by CLI and client interlocks in this research branch |
+| Full production authority | not earned; historical out-of-sample validation remains pending |
 | Recommended review mode | PAPER / research only |
 
 ## What the system does
@@ -27,9 +28,20 @@ An end-to-end research system for real-time NBA player-prop pricing, execution, 
 - revalidates play-by-play and book state immediately before sending;
 - records prediction, decision, quote, fill, markout, P&L, and governance evidence.
 
-## Probability engine 2026.31
+## Probability engine 2026.32
 
-Engine 2026.31 is intentionally a new probability identity and does not inherit 2026.30 calibration or authority.
+This probability identity does not inherit 2026.31 calibration or authority.
+
+- Pregame availability is a shared scenario shock across a player's stats and teammates' minutes; observed live eligibility supersedes stale pregame availability.
+- Rotation scheduling excludes zero-allocation players and refuses impossible five-player scenarios.
+- Clutch compilation follows simulated score margins at rotation boundaries; overtime opens in the tied-score clutch state.
+- Prior selection freezes parameters before the outer holdout and cannot mark itself validated.
+
+Execution-value intervals now include paired fill-fraction and residual uncertainty. Older execution champions must be refitted to the new uncertainty schema. Zero Kelly and zero contract limits stop allocation. Discrete CVaR uses exact tail probability mass.
+
+See [VALIDATION.md](VALIDATION.md) for the audit, reproducible baseline diagnostics, historical replay schema, test results, and evidence limitations. No after-cost profitability improvement has been established.
+
+### Retained 2026.31 corrections
 
 Key changes relative to 2026.30:
 
@@ -117,18 +129,20 @@ That compiles and runs the current regression stack. The expected final banner i
 
 ```text
 PORTFOLIO VALIDATION: PASS
-Trader v2026.40 | Engine 2026.31 | Quote policy qp8
+Trader v2026.40 | Engine 2026.32 | Quote policy qp8
 ```
 
 ## Production governance
 
 Code readiness is not economic readiness.
 
-A real-money production start must earn the required predictive and execution evidence for the current engine / policy family. New probability-engine versions start with fresh predictive authority. Safety gates are not weakened to force activity.
+Live CLI modes (`--live`, `--pilot-live`, `--scaled-live`) are disabled in this branch, and authenticated exchange clients cannot trade. Re-enabling them requires separate authorization and a reviewed source change; there is no environment-variable bypass.
+
+Any future real-money production start must earn the required predictive and execution evidence for the current engine / policy family. New probability-engine versions start with fresh predictive authority. Safety gates are not weakened to force activity.
 
 ## Known limitations
 
-- Engine 2026.31 still needs fresh out-of-sample evidence before production authorization.
+- Engine 2026.32 still needs fresh out-of-sample evidence before production authorization.
 - qp8 still needs sufficient live execution evidence before a champion execution model can be promoted.
 - close-game final-two-minute states remain blocked from new entries until the full foul / free-throw endgame process is integrated into the main event generator.
 - default quoting remains one-sided unless the NO side earns authority.

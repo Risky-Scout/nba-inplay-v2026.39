@@ -562,7 +562,7 @@ check("starvation is diagnostic only (Funnel has no threshold attributes; prints
 fn.posted(1)
 check("posting an order resets the starvation timer and reasons", fn.reasons == {} and time.time() - fn.last_post < 1)
 
-print("10) current engine support items (engine 2026.31)")
+print("10) current engine support items (engine 2026.32)")
 _rh = RotationHazardModel()
 _base = dict(player_id=1, team_id=1, role="starter", starter=True, completed_stints=1, period=4,
              seconds_remaining_in_period=360, fouls=2, projected_remaining_minutes=12, normal_window=True)
@@ -586,8 +586,8 @@ _vdf = pd.DataFrame([
 ])
 _vfit = fit_rotation_variance_frame(_vdf)
 check("31. fitted phase/rotation variance file has supported buckets", bool(_vfit.get("buckets")))
-check("32. engine prior fitting is versioned for the new probability engine", _vfit.get("engine_version") == "2026.31")
-check("engine version advanced only for Phase-B probability changes", mg.ENGINE_VERSION == "2026.31")
+check("32. engine prior fitting is versioned for the new probability engine", _vfit.get("engine_version") == "2026.32")
+check("engine version advanced only for Phase-B probability changes", mg.ENGINE_VERSION == "2026.32")
 
 # ── full main() cycles against mocks ─────────────────────────────────────────────────────────────────────────────────
 print("11) full trader cycles (mocked NBA / D&T / Kalshi)")
@@ -813,11 +813,13 @@ check("16. kill switch blocks every tier", any("Kill switch active" in m for m i
 cleanup_logs = _cleanup0
 cleanup_logs()
 write_cal({"*": dict(weight=0.0, tier="RESEARCH", research_reason="failed_evidence")})
+T.LIVE_TRADING_ENABLED = True  # Isolated test of the underlying production gate; no authorized client.
 try:
     run(["--live"])
     refused = False
 except SystemExit:
     refused = True
+T.LIVE_TRADING_ENABLED = False
 check("15. RESEARCH never trades live: --live without production authority refuses to start", refused)
 check("    and the refusal names the missing production cell", any("no PRODUCTION authority cell" in m for m in records))
 
@@ -835,6 +837,8 @@ write_cal({"*": dict(weight=0.0, tier="RESEARCH", research_reason="failed_eviden
 cm = dict(FE._model_dict(mfit), quote_policy="qp8", validated=True, n_fills=1000, explore_scale=0.1)
 cm["mark_all"] = [0.0] * len(XM.EXEC_FEATURES)
 cm["mark_all"][0] = 1.5                                  # +1.5c residual at every quote
+cm.update(uncertainty_schema="joint-fill-fraction-v1", boot_fill=[cm["fill_any"]]*3,
+          boot_fill_fraction=[cm["fill_fraction"]]*3, boot_mark=[cm["mark_all"]]*3)
 cm["exec_model_id"] = XM.model_id(cm)
 json.dump(cm, open(os.path.join(TMP, "champion_exec_model.json"), "w"))
 rec = run([])
@@ -850,6 +854,7 @@ os.remove(os.path.join(TMP, "champion_exec_model.json"))
 cleanup_logs()
 write_cal({})
 _live = {"n": 0, "orders": []}
+T.LIVE_TRADING_ENABLED = True  # All exchange I/O below is stubbed; never enables a real client.
 T.KalshiClient.can_trade = property(lambda self: True)
 def _send(self, m, side, price_cents, count, is_maker, ttl_sec):
     _live["n"] += 1

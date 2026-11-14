@@ -54,3 +54,6 @@ tmp/
 
 # Codespaces live-review cache
 .review_data/
+
+# Local audit scratch (never publish runtime evidence or private data)
+work/
