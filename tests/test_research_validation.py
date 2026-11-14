@@ -4,11 +4,14 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+from cryptography.hazmat.primitives.asymmetric import rsa
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 import pandas as pd
+import owner_authorization as OA
 import economic_validation as EV
 import kalshi_exec_model as XM
 import kalshi_nba_inplay_trader as T
@@ -110,7 +113,7 @@ class ValidationTests(unittest.TestCase):
 
     def test_live_requires_explicit_mode_and_credentials(self):
         client = T.KalshiClient("fake", "")  # PAPER remains the default, even with credentials.
-        client._private_key = object()
+        client._private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self.assertFalse(client.can_trade)
         client._session.post = lambda *a, **k: self.fail("paper POST attempted")
         client._session.delete = lambda *a, **k: self.fail("paper DELETE attempted")
@@ -118,7 +121,9 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(client.send_exit(None, "yes", 40, 1), (None, 0.0))
         self.assertFalse(client.cancel_order("o", "t"))
         client.paper = False
-        self.assertTrue(client.can_trade)  # Capability only; never submit a real order in tests.
+        self.assertFalse(client.can_trade)  # An arbitrary private key cannot authorize live trading.
+        with patch.object(OA, "OWNER_PUBLIC_KEY_SHA256", OA.public_key_fingerprint(client._private_key)):
+            self.assertTrue(client.can_trade)  # Test-only pin; never submit an actual order.
         client.key_id = ""
         self.assertFalse(client.can_trade)
         client.key_id = "fake"

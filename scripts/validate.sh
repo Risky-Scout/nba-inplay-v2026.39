@@ -5,6 +5,7 @@ cd "$ROOT"
 
 python3 -m py_compile *.py tests/*.py
 python3 tests/test_secret_audit.py
+python3 tests/test_owner_authorization.py
 python3 tests/test_research_validation.py
 python3 test_v2039.py
 python3 tests/test_v2037.py

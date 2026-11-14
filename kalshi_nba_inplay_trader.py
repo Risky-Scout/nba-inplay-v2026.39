@@ -69,6 +69,7 @@ from kalshi_results import phase_of_period, gap_bin_of_value
 from execution_size_authority import size_bucket, highest_authorized_qty, load_authority
 from execution_hazard import action_key
 from review_dt_adapter import ReviewDunksAndThreesClient
+from owner_authorization import is_authorized_signer
 
 try:
     from kalshi_auth import load_private_key, get_auth_headers
@@ -793,9 +794,11 @@ class KalshiClient:
 
     @property
     def can_trade(self) -> bool:
-        return (not self.paper) and self._private_key is not None and bool(self.key_id)
+        return (not self.paper) and bool(self.key_id) and is_authorized_signer(self._private_key)
 
     def _auth(self, method: str, path: str) -> Dict[str, str]:
+        if method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and not self.can_trade:
+            raise PermissionError("Live mutation requires the owner's authorized signing key.")
         return get_auth_headers(self.key_id, self._private_key, method, f"/trade-api/v2{path}")
 
     def _warn_once(self, key: str, msg: str):
@@ -2359,7 +2362,7 @@ def main():
             logger.info("production_profile.json written: later production runs must match it.")
     kalshi = KalshiClient(KALSHI_KEY_ID, KALSHI_PEM_PATH, paper=not args.live)
     if args.live and not kalshi.can_trade:
-        logger.error("--live requested but Kalshi key/PEM not loaded. Refusing to start.")
+        logger.error("--live requires credentials and the owner-authorized RSA signing key. Refusing to start.")
         sys.exit(1)
     if args.ws or args.ws_selftest:
         if kalshi._private_key is None or not kalshi.key_id:

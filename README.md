@@ -13,7 +13,7 @@ An end-to-end research system for real-time NBA player-prop pricing, execution, 
 | Probability engine | 2026.32 |
 | Quote policy | qp8 |
 | Code path | current |
-| Live trading | available through explicit live flags and configured credentials; PAPER by default |
+| Live trading | owner signing key only, explicit live flags and credentials; PAPER by default |
 | Full production authority | not earned; historical out-of-sample validation remains pending |
 | Recommended review mode | PAPER / research only |
 
@@ -136,7 +136,7 @@ Trader v2026.40 | Engine 2026.32 | Quote policy qp8
 
 Code readiness is not economic readiness.
 
-Live CLI modes (`--live`, `--pilot-live`, `--scaled-live`) are available at the owner's explicit authorization. PAPER remains the default. Live execution requires configured exchange credentials. Existing production evidence gates, pilot/scaled-mode constraints, exposure limits, stale-state checks, and order reconciliation remain active. Enabling the capability does not start a trading process.
+Live CLI modes (`--live`, `--pilot-live`, `--scaled-live`) are available at the owner's explicit authorization. PAPER remains the default. Live execution requires configured exchange credentials and an RSA private signing key matching the owner's pinned public-key fingerprint. Existing production evidence gates, pilot/scaled-mode constraints, exposure limits, stale-state checks, and order reconciliation remain active. Enabling the capability does not start a trading process.
 
 Any future real-money production start must earn the required predictive and execution evidence for the current engine / policy family. New probability-engine versions start with fresh predictive authority. Safety gates are not weakened to force activity.
 
@@ -167,5 +167,14 @@ Install the optional local pre-commit check in each checkout with
 To audit reachable local Git history, use
 `python3 scripts/audit_repository_secrets.py --history`. These pattern checks do
 not cover every secret format or replace GitHub secret scanning and push protection.
-Owner-only signing-key authorization is pending the owner's public-key fingerprint;
-no allowlist has been fabricated from GitHub usernames or file paths.
+Live authorization checks `owner_authorization.py`: the SHA-256 fingerprint of the
+loaded private key's DER SubjectPublicKeyInfo must match the owner's pinned public
+fingerprint. Only this public hash is committed. The private PEM and API credentials
+stay local. The check applies to all live modes and direct order, exit, cancellation
+and mutation-signing paths; there is no CLI or environment override. PAPER remains
+the default and existing production/risk gates remain active.
+
+This restricts the unmodified application. It cannot prevent others from editing a
+public-source fork, and it does not replace Kalshi's credential authentication.
+Changing or rotating the owner's signing key requires updating the public pin and
+restarting the process; do not share the private key to troubleshoot a mismatch.

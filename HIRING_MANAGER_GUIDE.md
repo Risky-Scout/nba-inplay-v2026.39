@@ -1,6 +1,6 @@
 # Hiring Manager Guide
 
-Live trading is available through explicit live flags and configured credentials; PAPER remains the default. See [VALIDATION.md](VALIDATION.md) for the baseline audit and the outstanding historical evidence requirements.
+Live trading requires explicit live flags, configured credentials and the owner's pinned RSA signing key; PAPER remains the default. See [VALIDATION.md](VALIDATION.md) for the baseline audit and the outstanding historical evidence requirements.
 
 ## 5-minute review
 

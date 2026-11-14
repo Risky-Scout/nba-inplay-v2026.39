@@ -5,7 +5,8 @@ Baseline: latest `main` verified on November 14, 2026, commit
 Branch: `research/calibration-execution-capital-preservation`.
 
 **The owner explicitly authorized restoring live-trading capability. PAPER remains
-the default; live modes require explicit flags and credentials. No orders were
+the default; live modes require explicit flags, credentials and the owner-pinned
+RSA signing key. No orders were
 submitted and nothing was deployed.**
 This change does not establish improved NBA calibration or after-cost profitability.
 The economic acceptance criterion remains unfulfilled pending historical evidence.
@@ -26,7 +27,7 @@ The economic acceptance criterion remains unfulfilled pending historical evidenc
 | Cross-game scenarios | Engine calls can reuse seed/row indices across independent games | Seeded per-game permutations preserve within-game player/strike dependence; shared model-error factors remain shared |
 | Economic attribution | CVaR resizing dropped fill/confidence discounts from displayed EV | Resized EV retains these discounts and reports conditional-on-fill EV separately |
 | Evidence | Existing audit has per-market/phase views and game bootstrap; candidate settlement diagnostics assume fills; existing execution fitter uses logging dates | Added strict offline as-of paired evaluation; legacy diagnostic/gate methodology has not been replaced or newly certified |
-| Execution controls | Maker-only guards, stale-book/PBP gates, terminal-proof reconciliation, reserved pending risk and shutdown cancellation already exist | Retained; live capability restored on explicit owner authorization; direct mutations still require a non-paper authenticated client |
+| Execution controls | Maker-only guards, stale-book/PBP gates, terminal-proof reconciliation, reserved pending risk and shutdown cancellation already exist | Retained; live capability restored on explicit owner authorization; direct mutations require a non-paper client with credentials and the owner-pinned RSA signing key |
 
 No code was deleted as obsolete: the audit did not establish a safe removal.
 
@@ -60,7 +61,7 @@ would not establish real-world generalization.
 The unmodified baseline passed all three existing suites: v2039, v2037
 (111 checks), and v2038 (49 checks). The improved branch retains these suites
 with current-engine identities and mocked exchange methods. Live capability tests
-verify explicit non-paper mode and both credentials are required; direct mutations
+verify explicit non-paper mode, credentials and the owner-pinned signing key are required; direct mutations
 remain blocked in PAPER mode. Existing mocked trader-cycle tests cover the
 production gate and pilot execution without exchange network requests.
 
@@ -199,3 +200,19 @@ The follow-up adds a staged-index pre-commit check, CI scanning, redaction tests
 and ignore rules for additional key containers, runtime CSVs, the actual order
 journal filename, review outputs and local provider snapshots. The commit hook is
 configured in this cloud checkout; Mac checkouts require local installation.
+
+## Owner-only authorization
+
+The owner supplied a SHA-256 fingerprint over the RSA public key's DER
+SubjectPublicKeyInfo. `owner_authorization.py` pins that public fingerprint; it
+contains no private PEM, API credential or signing capability. `can_trade` verifies
+the loaded key on every check, so changing it revokes capability immediately. Direct
+order, exit and cancellation methods and mutation request signing refuse all other
+keys. PAPER remains the default, and production/risk controls are preserved.
+
+Five added authorization tests use ephemeral RSA keys and mocked HTTP sessions:
+matching/mismatched pins, explicit live mode, missing credentials, public/invalid
+key rejection, direct mutation rejection and key-swap revocation. The owner's
+private key is never loaded in CI or this cloud environment. This restricts the
+unmodified application; public forks can change their own source. Kalshi still
+validates credentials and signatures against the actual exchange account.
