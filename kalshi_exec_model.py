@@ -81,7 +81,7 @@ def standardize(scaler: dict, X: np.ndarray) -> np.ndarray:
 
 def model_id(model: dict) -> str:
     """Content hash of what the model predicts with (features, scaler, coefficients, training spec)."""
-    keep = {k: model.get(k) for k in ("features", "scaler", "fill_any", "fill_fraction", "filled_qty", "fill", "mark_all", "mark_ef", "drift", "spec", "trained_through")}
+    keep = {k: model.get(k) for k in ("features", "scaler", "fill_any", "fill_fraction", "filled_qty", "fill", "mark_all", "mark_ef", "drift", "spec", "trained_through", "uncertainty_schema", "boot_fill", "boot_mark", "boot_fill_fraction")}
     return hashlib.sha256(json.dumps(keep, sort_keys=True, default=str).encode()).hexdigest()[:12]
 
 
@@ -109,8 +109,14 @@ def quote_value(model: dict, x_raw: np.ndarray, alpha_c: float, fee_c: float, z:
     # Economic value is per REQUESTED contract, so partial-fill fraction—not probability of any fill—is
     # the correct multiplier. Also expose total expected value for the exact requested quantity.
     edge_draw = alpha_c + em - fee_c
-    qev = pfrac * edge_draw
-    qev_total = expected_filled_qty * edge_draw
+    frac_draw = np.full(k, pfrac)
+    boot_frac = model.get("boot_fill_fraction") or []
+    if boot_frac:
+        if len(boot_frac) != k - 1:
+            raise ValueError("fill-fraction and markout bootstrap draws must be paired")
+        frac_draw[1:] = [float(_sig(np.asarray(b, float) @ xs)) for b in boot_frac]
+    qev = frac_draw * edge_draw
+    qev_total = qty_raw * qev
     use = slice(1, None) if k > 1 else slice(0, 1)
     sd = float(np.std(qev[use], ddof=1)) if k > 2 else 0.0
     return dict(pf=float(pf[0]), fill_fraction=pfrac, expected_filled_qty=expected_filled_qty,
@@ -133,8 +139,28 @@ def load_model(path: str, quote_policy: str) -> Optional[dict]:
             m = json.load(f)
     except Exception:
         return None
+    if not isinstance(m, dict):
+        return None
     if m.get("quote_policy") != quote_policy or not m.get("validated") or m.get("features") != EXEC_FEATURES \
             or not m.get("scaler") or m.get("fill_any", m.get("fill")) is None or m.get("fill_fraction") is None or m.get("mark_all") is None:
         return None
-    m.setdefault("exec_model_id", model_id(m))
+    # Older champions omit the uncertainty of partial-fill quantity. They must be refitted.
+    if m.get("uncertainty_schema") != "joint-fill-fraction-v1":
+        return None
+    try:
+        n = len(EXEC_FEATURES)
+        arrays = [m["scaler"]["mean"], m["scaler"]["sd"], m.get("fill_any", m.get("fill")),
+                  m["fill_fraction"], m["mark_all"]]
+        draws = [m.get(k) or [] for k in ("boot_fill", "boot_mark", "boot_fill_fraction")]
+        if min(map(len, draws)) < 3 or len({len(v) for v in draws}) != 1:
+            return None
+        arrays.extend(b for group in draws for b in group)
+        if any(np.asarray(v, float).shape != (n,) or not np.isfinite(np.asarray(v, float)).all() for v in arrays):
+            return None
+        if (np.asarray(m["scaler"]["sd"], float) <= 0).any():
+            return None
+    except (KeyError, TypeError, ValueError):
+        return None
+    # Recompute: coefficients and uncertainty draws are both part of policy identity.
+    m["exec_model_id"] = model_id(m)
     return m

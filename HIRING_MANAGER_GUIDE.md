@@ -1,5 +1,7 @@
 # Hiring Manager Guide
 
+Live trading requires explicit live flags, configured credentials and the owner's pinned RSA signing key; PAPER remains the default. See [VALIDATION.md](VALIDATION.md) for the baseline audit and the outstanding historical evidence requirements.
+
 ## 5-minute review
 
 This project is best understood as an **in-play pricing and market-making system**, not as a standalone prediction model.
@@ -18,7 +20,7 @@ Look for:
 - possession-level event generation
 - player role / usage state
 - path-dependent rotations
-- substitution and return hazards
+- substitution and return hazard helpers (not a fully integrated possession-level substitution process)
 - simulated-score-dependent blowout behavior
 - generative D&T calibration
 - joint player-stat simulation
@@ -65,7 +67,8 @@ Review:
 - `fit_calibration.py`
 - `fit_execution.py`
 - `grade_predictions.py`
-- `grade_predictions.py`
+- `economic_validation.py`
+- `tests/test_research_validation.py`
 - `test_v2039.py`
 - `tests/test_v2037.py`
 - `tests/test_v2038.py`
@@ -105,9 +108,7 @@ Changing an economic rule changes the distribution of orders and fills. Evidence
 ### Regression suite
 
 ```bash
-python3 test_v2039.py
-python3 tests/test_v2037.py
-python3 tests/test_v2038.py
+./scripts/validate.sh
 ```
 
 ### Paper-mode live-feed research demo

@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+set -eu
+# Scan staged bytes, including newly added files; never display suspected values.
+exec python3 scripts/audit_repository_secrets.py

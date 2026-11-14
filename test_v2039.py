@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""v2026.40 / engine 2026.31 challenger regression checks."""
+"""v2026.40 / engine 2026.32 challenger regression checks."""
 import json, os, tempfile
 import numpy as np, pandas as pd
 import kalshi_exec_model as XM
@@ -25,15 +25,15 @@ def ck(name,cond,detail=""):
     print(("  [ok] " if cond else "  [FAIL] ")+name+(f" ({detail})" if detail else ""))
     if not cond:fails.append(name)
 
-ck("versions",T.TRADER_VERSION=="v2026.40" and T.QUOTE_POLICY=="qp8" and FE.QUOTE_POLICY=="qp8" and GP.QUOTE_POLICY=="qp8" and MG.ENGINE_VERSION=="2026.31")
+ck("versions",T.TRADER_VERSION=="v2026.40" and T.QUOTE_POLICY=="qp8" and FE.QUOTE_POLICY=="qp8" and GP.QUOTE_POLICY=="qp8" and MG.ENGINE_VERSION=="2026.32")
 ck("valid numeric zero is preserved", MG.finite_or_default(0.0,5.5)==0.0 and MG.finite_or_default(np.nan,5.5)==5.5)
 
 with tempfile.TemporaryDirectory() as _idtmp:
     _idp=os.path.join(_idtmp,"identity.csv")
-    open(_idp,"w").write("engine,cal_id,ticker,value\n2026.31,none,KXTEST-26NOV12ABC,1.5\n")
+    open(_idp,"w").write("engine,cal_id,ticker,value\n2026.32,none,KXTEST-26NOV12ABC,1.5\n")
     _idd=KR.read_log_csv(_idp)
     ck("engine identity remains lexical at ingestion",
-       str(_idd.loc[0,"engine"])=="2026.31" and str(_idd.loc[0,"ticker"])=="KXTEST-26NOV12ABC")
+       str(_idd.loc[0,"engine"])=="2026.32" and str(_idd.loc[0,"ticker"])=="KXTEST-26NOV12ABC")
 
 _zero_prof=MG.DTPlayerSkillProfile(99,"Zero Shot",1,3,78,210,100,20,.10,0,0,0,0,2,1,1,4,1,1,.60,.40,.35,.75,0,0,0)
 _zero_self=type("_Z",(object,),{"pbp":MG.LivePBPContext()})()

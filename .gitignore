@@ -54,3 +54,19 @@ tmp/
 
 # Codespaces live-review cache
 .review_data/
+
+# Local audit scratch (never publish runtime evidence or private data)
+work/
+
+# Additional private key containers and local execution evidence
+*.der
+*.jwk
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+*credentials*.json
+kalshi_*.csv
+kalshi_orders_journal.json
+review_outputs/
+review_data/

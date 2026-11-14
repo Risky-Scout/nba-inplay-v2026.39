@@ -430,22 +430,27 @@ def bootstrap_coefs(q, m_full, seed=0):
     rng = np.random.default_rng(seed)
     games = q["game"].unique()
     if len(games) < 3:
-        return [], []
+        return [], [], []
     by = {g: q.index[q["game"] == g].values for g in games}
     X = XM.standardize(m_full["scaler"], design(q))
     lab = q["label"].values
     w = 1.0 / np.clip(pd.to_numeric(q.get("propensity", 1.0), errors="coerce").fillna(1.0).values, 0.05, 1.0)
     y_m = q["m30_all"].values - X @ np.asarray(m_full["drift"])
-    bf, bm = [], []
+    bf, bm, bfrac = [], [], []
     for _ in range(N_BOOT):
         ix = np.concatenate([by[g] for g in rng.choice(games, len(games), replace=True)])
         kn = ~np.isnan(lab[ix])
         if kn.sum() < 10 or lab[ix][kn].sum() < 2:
             continue
+        frac = pd.to_numeric(q["fill_fraction"], errors="coerce").to_numpy()[ix]
+        kfrac = np.isfinite(frac)
+        if kfrac.sum() < 10:
+            continue
+        bfrac.append(list(map(float, fit_logit(X[ix][kfrac], np.clip(frac[kfrac], 1e-5, 1-1e-5), w[ix][kfrac]))))
         bf.append(list(map(float, fit_logit(X[ix][kn], lab[ix][kn], w[ix][kn]))))
         has = (lab[ix] == 1) & np.isfinite(y_m[ix])
         bm.append(list(map(float, fit_ridge(X[ix][has], y_m[ix][has], w[ix][has]))) if has.sum() >= 5 else list(map(float, m_full["mark_all"])))
-    return bf, bm
+    return bf, bm, bfrac
 
 
 def challenger_vs_champion(champ: dict, chall: dict, later: pd.DataFrame) -> dict:
@@ -527,8 +532,9 @@ def main(here=HERE):
               f"{MIN_DATES}+ dates; have {n_q}, {n_f}, {n_m}, {len(dates)}).")
     m = fit_all(q)
     md = _model_dict(m)
-    bf, bm = bootstrap_coefs(q, md)
-    md.update(boot_fill=bf, boot_mark=bm)
+    bf, bm, bfrac = bootstrap_coefs(q, md)
+    md.update(boot_fill=bf, boot_mark=bm, boot_fill_fraction=bfrac, uncertainty_schema="joint-fill-fraction-v1")
+    ok = bool(ok and len(bfrac) >= 3)
     pv, pse = (summ or {}).get("value_model"), (summ or {}).get("value_model_se")
     explore_scale = float(np.clip(pse / (abs(pv) + pse), 0.1, 1.0)) if (pv is not None and pse) else 1.0
     # observed action support by quote offset (price - side bid): PRODUCTION quotes are restricted to these in the trader;
