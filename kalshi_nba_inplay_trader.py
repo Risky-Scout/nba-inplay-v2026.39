@@ -56,9 +56,6 @@ from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 
-# Research branch interlock: changing this requires separate live-trading authorization.
-LIVE_TRADING_ENABLED = False
-
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.append(CURRENT_DIR)
@@ -796,7 +793,7 @@ class KalshiClient:
 
     @property
     def can_trade(self) -> bool:
-        return LIVE_TRADING_ENABLED and (not self.paper) and self._private_key is not None and bool(self.key_id)
+        return (not self.paper) and self._private_key is not None and bool(self.key_id)
 
     def _auth(self, method: str, path: str) -> Dict[str, str]:
         return get_auth_headers(self.key_id, self._private_key, method, f"/trade-api/v2{path}")
@@ -2096,8 +2093,6 @@ def main():
     ap.add_argument("--max-strikes", type=int, default=1, help="Strikes per (player, stat, side) offered to the optimizer")
     ap.add_argument("--starve-min", type=float, default=30.0, help="Print the OPPORTUNITY STARVATION report after this many quiet minutes")
     args = ap.parse_args()
-    if not LIVE_TRADING_ENABLED and (args.live or args.pilot_live or args.scaled_live):
-        ap.error("Live trading is disabled in this research branch; separate authorization is required.")
     global QUOTE_MAX_AGE
     QUOTE_MAX_AGE = max(5, args.quote_ttl - 3)
     mw_manual = "--model-weight" in sys.argv

@@ -1,6 +1,6 @@
 # Hiring Manager Guide
 
-This research branch disables live trading. See [VALIDATION.md](VALIDATION.md) for the baseline audit and the outstanding historical evidence requirements.
+Live trading is available through explicit live flags and configured credentials; PAPER remains the default. See [VALIDATION.md](VALIDATION.md) for the baseline audit and the outstanding historical evidence requirements.
 
 ## 5-minute review
 

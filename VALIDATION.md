@@ -4,7 +4,9 @@ Baseline: latest `main` verified on November 14, 2026, commit
 `0f20c6c3c29d8f8c215a11024efb7c734b99d74d`.
 Branch: `research/calibration-execution-capital-preservation`.
 
-**Live trading is disabled. No orders were submitted and nothing was deployed.**
+**The owner explicitly authorized restoring live-trading capability. PAPER remains
+the default; live modes require explicit flags and credentials. No orders were
+submitted and nothing was deployed.**
 This change does not establish improved NBA calibration or after-cost profitability.
 The economic acceptance criterion remains unfulfilled pending historical evidence.
 
@@ -24,7 +26,7 @@ The economic acceptance criterion remains unfulfilled pending historical evidenc
 | Cross-game scenarios | Engine calls can reuse seed/row indices across independent games | Seeded per-game permutations preserve within-game player/strike dependence; shared model-error factors remain shared |
 | Economic attribution | CVaR resizing dropped fill/confidence discounts from displayed EV | Resized EV retains these discounts and reports conditional-on-fill EV separately |
 | Evidence | Existing audit has per-market/phase views and game bootstrap; candidate settlement diagnostics assume fills; existing execution fitter uses logging dates | Added strict offline as-of paired evaluation; legacy diagnostic/gate methodology has not been replaced or newly certified |
-| Execution controls | Maker-only guards, stale-book/PBP gates, terminal-proof reconciliation, reserved pending risk and shutdown cancellation already exist | Retained, plus explicit research interlocks in CLI and `KalshiClient.can_trade` |
+| Execution controls | Maker-only guards, stale-book/PBP gates, terminal-proof reconciliation, reserved pending risk and shutdown cancellation already exist | Retained; live capability restored on explicit owner authorization; direct mutations still require a non-paper authenticated client |
 
 No code was deleted as obsolete: the audit did not establish a safe removal.
 
@@ -57,9 +59,10 @@ would not establish real-world generalization.
 
 The unmodified baseline passed all three existing suites: v2039, v2037
 (111 checks), and v2038 (49 checks). The improved branch retains these suites
-with current-engine identities and explicit, isolated test-only live-path overrides
-against mocked exchange methods. The research interlock is tested separately in
-fresh subprocesses for all three live flags and with a credential-like client.
+with current-engine identities and mocked exchange methods. Live capability tests
+verify explicit non-paper mode and both credentials are required; direct mutations
+remain blocked in PAPER mode. Existing mocked trader-cycle tests cover the
+production gate and pilot execution without exchange network requests.
 
 The added unittest suite covers zero Kelly, exact CVaR, missing scenarios, paired
 fill uncertainty, as-of violations, duplicate/overlapping evidence, future-label

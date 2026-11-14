@@ -1,7 +1,6 @@
 """Offline invariants: as-of boundaries, execution replay and capital preservation."""
 import copy
 import json
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -109,19 +108,22 @@ class ValidationTests(unittest.TestCase):
             p.write_text(json.dumps(deployable))
             self.assertIsNone(XM.load_model(str(p), "qp8"))
 
-    def test_no_live_paths(self):
-        client = T.KalshiClient("fake", "", paper=False)
+    def test_live_requires_explicit_mode_and_credentials(self):
+        client = T.KalshiClient("fake", "")  # PAPER remains the default, even with credentials.
         client._private_key = object()
         self.assertFalse(client.can_trade)
-        client._session.post = lambda *a, **k: self.fail("live POST attempted")
-        client._session.delete = lambda *a, **k: self.fail("live DELETE attempted")
+        client._session.post = lambda *a, **k: self.fail("paper POST attempted")
+        client._session.delete = lambda *a, **k: self.fail("paper DELETE attempted")
         self.assertEqual(client.send_order(None, "yes", 40, 1, True, 8), (None, 0.0))
         self.assertEqual(client.send_exit(None, "yes", 40, 1), (None, 0.0))
         self.assertFalse(client.cancel_order("o", "t"))
-        for flag in ("--live", "--pilot-live", "--scaled-live"):
-            p = subprocess.run([sys.executable, str(Path(T.__file__)), flag], capture_output=True, text=True)
-            self.assertEqual(p.returncode, 2)
-            self.assertIn("Live trading is disabled", p.stderr)
+        client.paper = False
+        self.assertTrue(client.can_trade)  # Capability only; never submit a real order in tests.
+        client.key_id = ""
+        self.assertFalse(client.can_trade)
+        client.key_id = "fake"
+        client._private_key = None
+        self.assertFalse(client.can_trade)
 
     def test_asof_and_identity_validation(self):
         d, _ = fixture()

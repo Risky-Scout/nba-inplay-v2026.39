@@ -13,7 +13,7 @@ An end-to-end research system for real-time NBA player-prop pricing, execution, 
 | Probability engine | 2026.32 |
 | Quote policy | qp8 |
 | Code path | current |
-| Live trading | disabled by CLI and client interlocks in this research branch |
+| Live trading | available through explicit live flags and configured credentials; PAPER by default |
 | Full production authority | not earned; historical out-of-sample validation remains pending |
 | Recommended review mode | PAPER / research only |
 
@@ -136,7 +136,7 @@ Trader v2026.40 | Engine 2026.32 | Quote policy qp8
 
 Code readiness is not economic readiness.
 
-Live CLI modes (`--live`, `--pilot-live`, `--scaled-live`) are disabled in this branch, and authenticated exchange clients cannot trade. Re-enabling them requires separate authorization and a reviewed source change; there is no environment-variable bypass.
+Live CLI modes (`--live`, `--pilot-live`, `--scaled-live`) are available at the owner's explicit authorization. PAPER remains the default. Live execution requires configured exchange credentials. Existing production evidence gates, pilot/scaled-mode constraints, exposure limits, stale-state checks, and order reconciliation remain active. Enabling the capability does not start a trading process.
 
 Any future real-money production start must earn the required predictive and execution evidence for the current engine / policy family. New probability-engine versions start with fresh predictive authority. Safety gates are not weakened to force activity.
 

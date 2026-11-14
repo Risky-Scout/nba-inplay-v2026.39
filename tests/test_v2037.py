@@ -813,13 +813,11 @@ check("16. kill switch blocks every tier", any("Kill switch active" in m for m i
 cleanup_logs = _cleanup0
 cleanup_logs()
 write_cal({"*": dict(weight=0.0, tier="RESEARCH", research_reason="failed_evidence")})
-T.LIVE_TRADING_ENABLED = True  # Isolated test of the underlying production gate; no authorized client.
 try:
     run(["--live"])
     refused = False
 except SystemExit:
     refused = True
-T.LIVE_TRADING_ENABLED = False
 check("15. RESEARCH never trades live: --live without production authority refuses to start", refused)
 check("    and the refusal names the missing production cell", any("no PRODUCTION authority cell" in m for m in records))
 
@@ -854,7 +852,6 @@ os.remove(os.path.join(TMP, "champion_exec_model.json"))
 cleanup_logs()
 write_cal({})
 _live = {"n": 0, "orders": []}
-T.LIVE_TRADING_ENABLED = True  # All exchange I/O below is stubbed; never enables a real client.
 T.KalshiClient.can_trade = property(lambda self: True)
 def _send(self, m, side, price_cents, count, is_maker, ttl_sec):
     _live["n"] += 1
